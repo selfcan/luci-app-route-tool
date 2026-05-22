@@ -1,0 +1,370 @@
+#!/bin/sh
+# route-tool backend - OpenWrt router partition backup/write helper
+# by 数码罗记 · godsun.pro
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+LOCK=/tmp/route-tool.lock
+ALLOW_PARTS="gpt cdt art ART appsbl factory mibib bl2 BL2 fip FIP config Config u-boot uboot"
+COMMON=/usr/libexec/route-tool.d/storage_common.sh
+[ -r "$COMMON" ] || COMMON="${0%/*}/route-tool.d/storage_common.sh"
+[ -r "$COMMON" ] && . "$COMMON"
+
+err(){ echo "$*" >&2; }
+json_escape(){ sed 's/\\/\\\\/g; s/"/\\"/g'; }
+critical_part(){
+    case "$1" in
+        gpt|appsbl|bl2|BL2|fip|FIP|mibib) return 0 ;;
+    esac
+    return 1
+}
+allowed_part(){
+    p="$1"
+    for a in $ALLOW_PARTS; do [ "$p" = "$a" ] && return 0; done
+    return 1
+}
+md5_of_file(){ md5sum "$1" 2>/dev/null | awk '{print $1}'; }
+md5_of_block_prefix(){
+    dev="$1"; bytes="$2"; tmp="/tmp/route-tool-md5-$$.bin"
+    dd if="$dev" of="$tmp" bs=1 count="$bytes" 2>/dev/null || return 1
+    md5_of_file "$tmp"
+    rm -f "$tmp"
+}
+md5_of_mtd_prefix(){
+    dev="$1"; bytes="$2"; tmp="/tmp/route-tool-md5-$$.bin"; mtdnum="$(basename "$dev")"; mtype="$(cat /sys/class/mtd/$mtdnum/type 2>/dev/null || echo unknown)"
+    if command -v nanddump >/dev/null 2>&1 && [ "$mtype" = "nand" ]; then
+        nanddump -l "$bytes" -f "$tmp" "$dev" >/tmp/route-tool-nanddump-$$.log 2>&1 || return 1
+    else
+        dd if="$dev" of="$tmp" bs=1 count="$bytes" 2>/dev/null || return 1
+    fi
+    md5_of_file "$tmp"
+    rm -f "$tmp" /tmp/route-tool-nanddump-$$.log
+}
+check_bad_blocks(){
+    dev="$1"; mtdnum="$(basename "$dev")"; mtype="$(cat /sys/class/mtd/$mtdnum/type 2>/dev/null || echo unknown)"
+    [ "$mtype" = "nand" ] || return 0
+    bad="$(cat /sys/class/mtd/$mtdnum/bad_blocks 2>/dev/null || echo 0)"
+    [ "$bad" = "0" ] || echo "警告：检测到 NAND 坏块数量：$bad。写入后 MD5 若不一致，可能与坏块/跳块/OOB 处理有关，请谨慎确认。"
+}
+lock_begin(){
+    if ! mkdir "$LOCK" 2>/dev/null; then err "已有备份/写入任务正在执行，请稍后再试"; exit 8; fi
+    trap 'rm -rf "$LOCK"; [ -n "${TMPFILE:-}" ] && rm -f "$TMPFILE"' EXIT INT TERM
+}
+
+find_emmc(){
+    for d in /sys/block/mmcblk*; do
+        [ -f "$d/device/type" ] || continue
+        t="$(cat "$d/device/type" 2>/dev/null)"
+        [ "$t" = "MMC" ] || continue
+        b="$(basename "$d")"
+        [ -b "/dev/$b" ] && { echo "/dev/$b"; return 0; }
+    done
+    return 1
+}
+
+find_emmc_part(){
+    target="$1"; emmc="${2:-}"
+    if [ -n "$emmc" ]; then
+        bases="$(basename "$emmc")"
+    else
+        # Search every MMC block device so systems with eMMC exposed as mmcblk1 are handled.
+        bases=""
+        for d in /sys/block/mmcblk*; do
+            [ -f "$d/device/type" ] || continue
+            [ "$(cat "$d/device/type" 2>/dev/null)" = "MMC" ] || continue
+            b="$(basename "$d")"
+            bases="${bases}${bases:+ }$b"
+        done
+    fi
+    target_lc="$(printf '%s' "$target" | tr 'A-Z' 'a-z')"
+    for base in $bases; do
+        for p in /sys/block/$base/${base}p*; do
+            [ -f "$p/uevent" ] || continue
+            raw="$(sed -n 's/^PARTNAME=//p' "$p/uevent" 2>/dev/null | head -n 1)"
+            name="$raw"
+            case "$name" in 0:*) name="${name#0:}" ;; esac
+            name_lc="$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
+            [ "$name_lc" = "$target_lc" ] || continue
+            dev="/dev/$(basename "$p")"
+            [ -b "$dev" ] && { echo "$dev"; return 0; }
+        done
+    done
+    return 1
+}
+
+find_mtd_line(){
+    target="$1"
+    [ -r /proc/mtd ] || return 1
+    awk -F'[: "]+' -v n="$target" '$1 ~ /^mtd/ && $4 == n {print $1 " " $2 " " $3 " " $4; exit}' /proc/mtd
+}
+
+find_mtd_dev(){
+    line="$(find_mtd_line "$1")" || return 1
+    set -- $line
+    [ -n "$1" ] || return 1
+    echo "/dev/$1"
+}
+
+mtd_size(){
+    line="$(find_mtd_line "$1")" || return 1
+    set -- $line
+    printf "%d\n" "0x$2" 2>/dev/null
+}
+
+block_size(){
+    dev="$1"; base="$(basename "$dev")"
+    if command -v blockdev >/dev/null 2>&1; then
+        blockdev --getsize64 "$dev" 2>/dev/null && return 0
+    fi
+    [ -r "/sys/class/block/$base/size" ] || return 1
+    sec="$(cat "/sys/class/block/$base/size" 2>/dev/null)"
+    [ -n "$sec" ] || return 1
+    echo $((sec * 512))
+}
+
+emmc_manf_name(){
+    # Use shared mapping so JSON list/detail/analyze agree on manufacturer names.
+    if command -v rt_emmc_manf_name >/dev/null 2>&1; then
+        rt_emmc_manf_name "$1"
+    else
+        case "$1" in 88|d6|D6) echo "Longsys(江波龙)" ;; "") echo "未知" ;; *) echo "未知(0x$1)" ;; esac
+    fi
+}
+
+emmc_health_text(){
+    out="$(/usr/libexec/route-tool.d/storage_health.sh 2>/dev/null | sed -n 's/^EMMC_LIFE_TEXT=//p' | head -n 1)"
+    [ -n "$out" ] && { echo "$out"; return; }
+    echo "N/A"
+}
+
+nand_brand_guess(){
+    out=""
+    for f in /sys/class/mtd/mtd*/device/modalias /sys/class/mtd/mtd*/device/name /sys/class/mtd/mtd*/name; do
+        [ -r "$f" ] || continue
+        v="$(cat "$f" 2>/dev/null | head -n 1)"
+        case "$v" in
+            *spi*|*nand*|*NAND*|*flash*|*Flash*) out="$v"; break ;;
+        esac
+    done
+    if [ -z "$out" ]; then
+        out="$(dmesg 2>/dev/null | grep -i 'spinand\|spi-nand\|winbond\|gigadevice\|macronix\|micron\|toshiba\|kioxia\|esmt\|foresee' | tail -n 1 | sed 's/^.*] //')"
+    fi
+    case "$out" in
+        *Winbond*|*winbond*|*W25*) echo "Winbond(华邦) $out" ;;
+        *GigaDevice*|*gigadevice*|*GD5*|*gd5*) echo "GigaDevice(兆易创新) $out" ;;
+        *Macronix*|*macronix*|*MX*) echo "Macronix(旺宏) $out" ;;
+        *Micron*|*micron*|*MT29*) echo "Micron(美光) $out" ;;
+        *Toshiba*|*Kioxia*|*toshiba*|*kioxia*) echo "Toshiba/Kioxia(东芝/铠侠) $out" ;;
+        *ESMT*|*esmt*) echo "ESMT(晶豪) $out" ;;
+        *FORESEE*|*Foresee*|*foresee*) echo "FORESEE(江波龙) $out" ;;
+        "") echo "未知" ;;
+        spi:spi-nand|spi-nand) echo "SPI-NAND(内核未导出具体品牌)" ;;
+        *) echo "$out" ;;
+    esac
+}
+
+storage_json(){
+    emmc="$1"; base="$(basename "$emmc" 2>/dev/null)"
+    printf '"storage":{'
+    printf '"emmc":{"present":%s' "$([ -n "$emmc" ] && echo true || echo false)"
+    if [ -n "$emmc" ]; then
+        cid="$(cat /sys/class/block/$base/device/cid /sys/block/$base/device/cid 2>/dev/null | head -n 1)"
+        manfid="$(printf '%s' "$cid" | cut -c1-2)"; maker="$(emmc_manf_name "$manfid")"
+        prod="$(printf '%s' "$cid" | cut -c5-12)"; fw="$(printf '%s' "$cid" | cut -c13-14)"; serial="$(printf '%s' "$cid" | cut -c15-22)"
+        cap="$(block_size "$emmc" 2>/dev/null || echo 0)"
+        health="$(emmc_health_text)"
+        printf ',"dev":"%s","manufacturer":"%s","manufacturer_id":"0x%s","product":"%s","fwrev":"%s","serial":"%s","cid":"%s","capacity":%s,"health":"%s"' \
+            "$(printf '%s' "$emmc" | json_escape)" "$(printf '%s' "$maker" | json_escape)" "$(printf '%s' "$manfid" | json_escape)" "$(printf '%s' "$prod" | json_escape)" "$(printf '%s' "$fw" | json_escape)" "$(printf '%s' "$serial" | json_escape)" "$(printf '%s' "$cid" | json_escape)" "$cap" "$(printf '%s' "$health" | json_escape)"
+    fi
+    printf '},'
+    nand_present=false; nand_cnt=0; nand_bad=0
+    if [ -r /proc/mtd ]; then
+        for m in /sys/class/mtd/mtd*; do
+            [ -r "$m/type" ] || continue
+            t="$(cat "$m/type" 2>/dev/null)"
+            case "$t" in *nand*|nand|mlc-nand|slc-nand) nand_present=true; nand_cnt=$((nand_cnt+1)); b="$(cat "$m/bad_blocks" 2>/dev/null || echo 0)"; nand_bad=$((nand_bad+b)) ;; esac
+        done
+    fi
+    if [ "$nand_present" = true ]; then brand="$(nand_brand_guess)"; else brand=""; fi
+    printf '"nand":{"present":%s,"brand":"%s","chips":%s,"bad_blocks":%s},' "$nand_present" "$(printf '%s' "$brand" | json_escape)" "$nand_cnt" "$nand_bad"
+    printf '"extra":['
+    detect_extra_storage_json
+    printf ']'
+    printf '}'
+}
+
+detect_extra_storage_json(){
+    first=1
+    df -P -k 2>/dev/null | awk 'NR>1 {print $1"|"$2"|"$6}' | while IFS='|' read dev kb mp; do
+        case "$dev" in /dev/sd*|/dev/nvme*|/dev/hd*) ;;
+            *) continue ;;
+        esac
+        [ -n "$mp" ] || mp=""
+        base="$(basename "$dev")"
+        disk="$base"
+        case "$base" in sd*[0-9]) disk="$(printf '%s' "$base" | sed 's/[0-9]*$//')" ;; nvme*n[0-9]p[0-9]*) disk="$(printf '%s' "$base" | sed 's/p[0-9]*$//')" ;; esac
+        typ="USB/外置"
+        case "$disk" in nvme*) typ="M.2/NVMe" ;; sd*) typ="USB/SATA" ;; hd*) typ="SATA/IDE" ;; esac
+        bytes=$((kb * 1024))
+        [ $first -eq 0 ] && printf ','
+        printf '{"type":"%s","dev":"%s","mount":"%s","size":%s}' "$(printf '%s' "$typ" | json_escape)" "$(printf '%s' "$dev" | json_escape)" "$(printf '%s' "$mp" | json_escape)" "$bytes"
+        first=0
+    done
+}
+
+file_size(){ wc -c < "$1" | tr -d ' '; }
+
+part_type(){
+    part="$1"; emmc="$(find_emmc 2>/dev/null || true)"
+    if [ -n "$emmc" ] && [ "$part" != "gpt" ]; then
+        dev="$(find_emmc_part "$part" "$emmc" 2>/dev/null || true)"
+        [ -n "$dev" ] && { echo "block $dev"; return 0; }
+    fi
+    mtd="$(find_mtd_dev "$part" 2>/dev/null || true)"
+    [ -n "$mtd" ] && { echo "mtd $mtd"; return 0; }
+    return 1
+}
+
+list_json(){
+    emmc="$(find_emmc 2>/dev/null || true)"
+    printf '{"name":"route-tool","footer":"by 数码罗记 · godsun.pro","emmc":"%s","has_gpt":%s,' "$(printf '%s' "$emmc" | json_escape)" "$([ -n "$emmc" ] && echo true || echo false)"
+    storage_json "$emmc"
+    printf ',"parts":['
+    first=1
+    if [ -n "$emmc" ]; then
+        printf '%s{"name":"gpt","label":"GPT 分区表","kind":"gpt","dev":"%s","size":17408,"can_backup":true,"can_write":true,"danger":true,"note":"eMMC GPT 前34扇区备份，约17KB；包含保护MBR、主GPT头和分区项"}' "$([ $first -eq 1 ] && echo '' || echo ',')" "$(printf '%s' "$emmc" | json_escape)"; first=0
+        for p in cdt art appsbl factory mibib; do
+            dev="$(find_emmc_part "$p" "$emmc" 2>/dev/null || true)"
+            [ -n "$dev" ] || continue
+            sz="$(block_size "$dev" 2>/dev/null || echo 0)"
+            label="$p"; [ "$p" = "appsbl" ] && label="U-Boot"; [ "$p" = "mibib" ] && label="mibib / NAND分区表"
+            crit=false; critical_part "$p" && crit=true
+            note=""; [ "$p" = "cdt" ] && note="高通内存识别文件；没有硬改内存不要碰它"; [ "$p" = "art" ] && note="无线校准/MAC 数据，务必先备份"; [ "$p" = "factory" ] && note="校准/EEPROM 数据，务必先备份"; [ "$p" = "appsbl" ] && note="U-Boot 分区，写错可能变砖"; [ "$p" = "mibib" ] && note="NAND 分区表，写错可能导致分区错乱"
+            printf '%s{"name":"%s","label":"%s","kind":"block","dev":"%s","size":%s,"can_backup":true,"can_write":true,"danger":true,"critical":%s,"note":"%s"}' "$([ $first -eq 1 ] && echo '' || echo ',')" "$p" "$label" "$(printf '%s' "$dev" | json_escape)" "$sz" "$crit" "$(printf '%s' "$note" | json_escape)"; first=0
+        done
+    fi
+    if [ -r /proc/mtd ]; then
+        for p in BL2 bl2 fip FIP factory art ART config Config u-boot uboot; do
+            line="$(find_mtd_line "$p" 2>/dev/null || true)"
+            [ -n "$line" ] || continue
+            set -- $line; mtdnum="$1"; size="$(printf "%d" "0x$2" 2>/dev/null || echo 0)"; type="$(cat /sys/class/mtd/$mtdnum/type 2>/dev/null || echo mtd)"
+            label="$p"; [ "$p" = "fip" ] || [ "$p" = "FIP" ] && label="$p / U-Boot"; [ "$p" = "bl2" ] || [ "$p" = "BL2" ] && label="$p / Preloader"
+            crit=false; critical_part "$p" && crit=true
+            note=""; [ "$p" = "fip" ] || [ "$p" = "FIP" ] && note="U-Boot/FIP 分区，写错可能变砖"; [ "$p" = "bl2" ] || [ "$p" = "BL2" ] && note="BL2/Preloader 分区，写错可能变砖"; [ "$p" = "factory" ] && note="无线校准/EEPROM 数据，务必先备份"
+            bad="$(cat /sys/class/mtd/$mtdnum/bad_blocks 2>/dev/null || echo 0)"
+            printf '%s{"name":"%s","label":"%s","kind":"mtd","dev":"/dev/%s","mtd_type":"%s","size":%s,"bad_blocks":%s,"can_backup":true,"can_write":true,"danger":true,"critical":%s,"note":"%s"}' "$([ $first -eq 1 ] && echo '' || echo ',')" "$p" "$label" "$mtdnum" "$type" "$size" "$bad" "$crit" "$(printf '%s' "$note" | json_escape)"; first=0
+        done
+    fi
+    printf ']}'
+}
+
+backup_gpt(){
+    emmc="$(find_emmc)" || { err "当前设备未发现 eMMC，不能备份 GPT"; exit 3; }
+    # sgdisk --backup on some OpenWrt builds creates a 0-byte file. For this router use-case,
+    # export the protective MBR + primary GPT header/partition entries directly.
+    # 34 sectors * 512B = 17408B (about 17KB), matching the field requirement.
+    dd if="$emmc" bs=512 count=34 2>/dev/null || { err "GPT 前 34 扇区备份失败"; exit 6; }
+}
+
+backup_part(){
+    part="$1"; allowed_part "$part" || { err "不支持的分区：$part"; exit 2; }
+    [ "$part" = "gpt" ] && { backup_gpt; return; }
+    set -- $(part_type "$part" 2>/dev/null) || { err "未找到分区：$part"; exit 3; }
+    kind="$1"; dev="$2"
+    TMPFILE="/tmp/route-tool-${part}-$$.bin"
+    if [ "$kind" = "block" ]; then
+        dd if="$dev" bs=1M 2>/dev/null
+    else
+        if command -v nanddump >/dev/null 2>&1 && [ "$(cat /sys/class/mtd/$(basename "$dev")/type 2>/dev/null)" = "nand" ]; then
+            nanddump -f "$TMPFILE" "$dev" >/dev/null 2>&1 || { err "NAND 备份失败：$part"; exit 6; }
+            cat "$TMPFILE"
+        else
+            dd if="$dev" bs=64k 2>/dev/null
+        fi
+    fi
+}
+
+restore_gpt(){
+    file="$1"; confirm="$2"
+    [ "$confirm" = "YES" ] || { err "写入/恢复需要确认参数 YES"; exit 7; }
+    emmc="$(find_emmc)" || { err "当前设备未发现 eMMC，不能恢复 GPT"; exit 3; }
+    command -v sgdisk >/dev/null 2>&1 || { err "缺少 sgdisk，请安装 gdisk 包"; exit 4; }
+    [ -s "$file" ] || { err "上传文件为空或不存在"; exit 5; }
+    lock_begin
+    sgdisk --backup="/tmp/route-tool-gpt-before-restore-$$.bin" "$emmc" >/dev/null 2>&1 || true
+    sgdisk --load-backup="$file" "$emmc" >/dev/null 2>&1 || { err "GPT 恢复失败"; exit 6; }
+    sync
+    echo "GPT 分区表已恢复，建议立即重启路由器。"
+}
+
+write_part(){
+    part="$1"; file="$2"; confirm="$3"
+    allowed_part "$part" || { err "不支持的分区：$part"; exit 2; }
+    [ "$confirm" = "YES" ] || { err "写入需要确认参数 YES"; exit 7; }
+    [ -s "$file" ] || { err "上传文件为空或不存在"; exit 5; }
+    [ "$part" = "gpt" ] && { restore_gpt "$file" "$confirm"; return; }
+    set -- $(part_type "$part" 2>/dev/null) || { err "未找到分区：$part"; exit 3; }
+    kind="$1"; dev="$2"; fsz="$(file_size "$file")"
+    [ "$fsz" -ge 4096 ] || { err "镜像文件过小，疑似错误文件"; exit 5; }
+    lock_begin
+    if [ "$kind" = "block" ]; then
+        psz="$(block_size "$dev" 2>/dev/null || echo 0)"
+        [ "$psz" -gt 0 ] && [ "$fsz" -le "$psz" ] || { err "镜像大于目标分区，已取消"; exit 5; }
+        dd if="$dev" of="/tmp/route-tool-${part}-before-write-$$.bin" bs=1M 2>/dev/null || true
+        before_md5="$(md5_of_block_prefix "$dev" "$fsz" 2>/dev/null || echo unknown)"
+        file_md5="$(md5_of_file "$file" 2>/dev/null || echo unknown)"
+        echo "写入前：分区前 ${fsz} 字节 MD5=$before_md5，文件 MD5=$file_md5"
+        dd if="$file" of="$dev" bs=1M 2>/dev/null || { err "eMMC 分区写入失败"; exit 6; }
+        sync
+        after_md5="$(md5_of_block_prefix "$dev" "$fsz" 2>/dev/null || echo unknown)"
+        echo "写入后：分区前 ${fsz} 字节 MD5=$after_md5"
+        [ "$after_md5" = "$file_md5" ] || { err "写入后 MD5 不一致，可能写入失败或设备异常，请不要重启并先检查备份。"; exit 6; }
+        echo "MD5 校验通过：写入文件与目标分区内容一致。"
+        echo "$part 写入完成。写入 bootloader / 分区表后建议重启。"
+    else
+        mtdnum="$(basename "$dev")"; mtype="$(cat /sys/class/mtd/$mtdnum/type 2>/dev/null || echo unknown)"
+        psz="$(mtd_size "$part" 2>/dev/null || echo 0)"
+        [ "$psz" -gt 0 ] && [ "$fsz" -le "$psz" ] || { err "镜像大于目标 MTD 分区，已取消"; exit 5; }
+        # 写入前备份，小分区一般可放入 /tmp
+        check_bad_blocks "$dev"
+        if command -v nanddump >/dev/null 2>&1 && [ "$mtype" = "nand" ]; then nanddump -f "/tmp/route-tool-${part}-before-write-$$.bin" "$dev" >/dev/null 2>&1 || true; else dd if="$dev" of="/tmp/route-tool-${part}-before-write-$$.bin" bs=64k 2>/dev/null || true; fi
+        before_md5="$(md5_of_mtd_prefix "$dev" "$fsz" 2>/dev/null || echo unknown)"
+        file_md5="$(md5_of_file "$file" 2>/dev/null || echo unknown)"
+        echo "写入前：分区前 ${fsz} 字节 MD5=$before_md5，文件 MD5=$file_md5"
+        if [ "$mtype" = "nand" ]; then
+            command -v flash_erase >/dev/null 2>&1 || { err "缺少 flash_erase，无法安全写 NAND"; exit 4; }
+            command -v nandwrite >/dev/null 2>&1 || { err "缺少 nandwrite，无法安全写 NAND"; exit 4; }
+            flash_erase "$dev" 0 0 >/dev/null 2>&1 || { err "NAND 擦除失败"; exit 6; }
+            nandwrite -p "$dev" "$file" >/dev/null 2>&1 || { err "NAND 写入失败"; exit 6; }
+        else
+            if command -v mtd >/dev/null 2>&1; then
+                mtd write "$file" "$part" >/dev/null 2>&1 || { err "MTD 写入失败"; exit 6; }
+            else
+                command -v flash_erase >/dev/null 2>&1 || { err "缺少 mtd/flash_erase，无法写入"; exit 4; }
+                flash_erase "$dev" 0 0 >/dev/null 2>&1 || { err "MTD 擦除失败"; exit 6; }
+                dd if="$file" of="$dev" bs=64k 2>/dev/null || { err "MTD 写入失败"; exit 6; }
+            fi
+        fi
+        sync
+        after_md5="$(md5_of_mtd_prefix "$dev" "$fsz" 2>/dev/null || echo unknown)"
+        echo "写入后：分区前 ${fsz} 字节 MD5=$after_md5"
+        if [ "$after_md5" = "$file_md5" ]; then
+            echo "MD5 校验通过：写入文件与目标分区内容一致。"
+        else
+            if [ "$mtype" = "nand" ]; then
+                err "写入后 MD5 不一致。NAND 若存在坏块/跳块/OOB 差异可能导致校验不一致，也可能写入异常；请结合坏块数量和备份谨慎判断。"
+            else
+                err "写入后 MD5 不一致，可能写入失败或设备异常，请不要重启并先检查备份。"
+            fi
+            exit 6
+        fi
+        echo "$part 写入完成。写入 bootloader / 分区表后建议重启。"
+    fi
+}
+
+cmd="${1:-list}"
+case "$cmd" in
+    list) list_json ;;
+    backup) [ -n "${2:-}" ] || { err "缺少分区名"; exit 2; }; backup_part "$2" ;;
+    write) [ -n "${2:-}" ] && [ -n "${3:-}" ] || { err "用法：route-tool write 分区 文件 YES"; exit 2; }; write_part "$2" "$3" "${4:-}" ;;
+    *) err "未知命令：$cmd"; exit 2 ;;
+esac
