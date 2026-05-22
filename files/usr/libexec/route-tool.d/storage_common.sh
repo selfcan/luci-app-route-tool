@@ -32,29 +32,50 @@ rt_cache_fresh() {
 rt_emmc_manf_name() {
     id="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
     id="${id#0x}"
-    # Single source of truth prevents the three previous manufacturer maps from drifting.
-    # JEDEC/manufacturer ID 0x88 is Longsys(江波龙); keep this exact correction everywhere.
+    # Manufacturer mapping: JEDEC CID MID + mmc-utils lsmmc.c + 实测补充
     case "$id" in
+        # 国际大厂
         01) echo "Samsung(三星)" ;;
-        02) echo "SK Hynix(海力士)" ;;
+        02) echo "SK Hynix(海力士)/Kingston(金士顿)" ;;
+        03) echo "Toshiba(东芝)" ;;
         04) echo "Intel(英特尔)" ;;
         06) echo "Micron(美光)" ;;
         07) echo "Spansion/Cypress" ;;
         08) echo "Toshiba/Kioxia(东芝/铠侠)" ;;
-        09) echo "STMicro" ;;
+        09) echo "STMicro(意法半导体)" ;;
         0a) echo "GigaDevice(兆易创新)" ;;
         0b) echo "Macronix(旺宏)" ;;
         0c) echo "Winbond(华邦)" ;;
-        15) echo "SanDisk(闪迪)" ;;
+        11) echo "Toshiba(东芝)" ;;
+        13) echo "Micron(美光)" ;;
+        15) echo "Samsung(三星)/SanDisk(闪迪)" ;;
         19) echo "Western Digital(西部数据)" ;;
+        1b) echo "Transcend(创见)/Samsung(三星)" ;;
+        1d) echo "Corsair(海盗船)/ADATA(威刚)" ;;
+        1f) echo "Kingston(金士顿)" ;;
         20) echo "Lexar(雷克沙)" ;;
         25) echo "Kingston(金士顿)" ;;
-        28) echo "Crucial(英睿达)" ;;
+        28) echo "Crucial(英睿达)/Lexar(雷克沙)" ;;
+        2c) echo "Kingston(金士顿)" ;;
         29) echo "ADATA(威刚)" ;;
         2d) echo "YMTC(长江存储)" ;;
         2e) echo "CXMT(长鑫存储)" ;;
-        30) echo "Netac(朗科)" ;;
+        30) echo "Netac(朗科)/SanDisk(闪迪)" ;;
+        33) echo "STMicroelectronics(意法)" ;;
+        37) echo "KingMax(胜创)" ;;
+        44) echo "ATP" ;;
+        45) echo "SanDisk(闪迪)" ;;
+        41) echo "Kingston(金士顿)" ;;
+        6f) echo "STMicroelectronics(意法)" ;;
+        70) echo "Kingston(金士顿)" ;;
+        74) echo "Transcend(创见)" ;;
+        76) echo "Patriot( Patriot)" ;;
+        82) echo "Gobe/Sony(索尼)" ;;
+        # 国产/代工
         88|d6) echo "Longsys(江波龙)" ;;
+        f4) echo "BIWIN(佰维)" ;;
+        fe) echo "Micron(美光)" ;;
+        # 未知
         "") echo "未知" ;;
         *) echo "未知(0x$id)" ;;
     esac

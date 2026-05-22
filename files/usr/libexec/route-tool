@@ -13,7 +13,7 @@ err(){ echo "$*" >&2; }
 json_escape(){ sed 's/\\/\\\\/g; s/"/\\"/g'; }
 critical_part(){
     case "$1" in
-        gpt|appsbl|bl2|BL2|fip|FIP|mibib) return 0 ;;
+        gpt|appsbl|bl2|BL2|fip|FIP|mibib|u-boot-env) return 0 ;;
     esac
     return 1
 }
@@ -232,13 +232,13 @@ list_json(){
     first=1
     if [ -n "$emmc" ]; then
         printf '%s{"name":"gpt","label":"GPT 分区表","kind":"gpt","dev":"%s","size":17408,"can_backup":true,"can_write":true,"danger":true,"note":"eMMC GPT 前34扇区备份，约17KB；包含保护MBR、主GPT头和分区项"}' "$([ $first -eq 1 ] && echo '' || echo ',')" "$(printf '%s' "$emmc" | json_escape)"; first=0
-        for p in cdt art appsbl factory mibib; do
+        for p in cdt art appsbl factory mibib bl2 fip u-boot-env; do
             dev="$(find_emmc_part "$p" "$emmc" 2>/dev/null || true)"
             [ -n "$dev" ] || continue
             sz="$(block_size "$dev" 2>/dev/null || echo 0)"
-            label="$p"; [ "$p" = "appsbl" ] && label="U-Boot"; [ "$p" = "mibib" ] && label="mibib / NAND分区表"
+            label="$p"; [ "$p" = "appsbl" ] && label="U-Boot"; [ "$p" = "mibib" ] && label="mibib / NAND分区表"; [ "$p" = "bl2" ] && label="bl2 / Preloader"; [ "$p" = "fip" ] && label="fip / U-Boot"; [ "$p" = "u-boot-env" ] && label="U-Boot 环境变量"
             crit=false; critical_part "$p" && crit=true
-            note=""; [ "$p" = "cdt" ] && note="高通内存识别文件；没有硬改内存不要碰它"; [ "$p" = "art" ] && note="无线校准/MAC 数据，务必先备份"; [ "$p" = "factory" ] && note="校准/EEPROM 数据，务必先备份"; [ "$p" = "appsbl" ] && note="U-Boot 分区，写错可能变砖"; [ "$p" = "mibib" ] && note="NAND 分区表，写错可能导致分区错乱"
+            note=""; [ "$p" = "cdt" ] && note="高通内存识别文件；没有硬改内存不要碰它"; [ "$p" = "art" ] && note="无线校准/MAC 数据，务必先备份"; [ "$p" = "factory" ] && note="校准/EEPROM 数据，务必先备份"; [ "$p" = "appsbl" ] && note="U-Boot 分区，写错可能变砖"; [ "$p" = "mibib" ] && note="NAND 分区表，写错可能导致分区错乱"; [ "$p" = "bl2" ] && note="MTK BL2/Preloader 分区，写错可能变砖"; [ "$p" = "fip" ] && note="MTK FIP/U-Boot 分区，写错可能变砖"; [ "$p" = "u-boot-env" ] && note="U-Boot 环境变量，写错可能无法启动"
             printf '%s{"name":"%s","label":"%s","kind":"block","dev":"%s","size":%s,"can_backup":true,"can_write":true,"danger":true,"critical":%s,"note":"%s"}' "$([ $first -eq 1 ] && echo '' || echo ',')" "$p" "$label" "$(printf '%s' "$dev" | json_escape)" "$sz" "$crit" "$(printf '%s' "$note" | json_escape)"; first=0
         done
     fi

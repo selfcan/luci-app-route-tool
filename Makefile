@@ -2,8 +2,8 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-route-tool
-# Keep Makefile and CONTROL/control aligned for the 0.3.8 memory-pressure/uninstall-safety release.
-PKG_VERSION:=0.3.8
+# Keep Makefile and CONTROL/control aligned for the 0.3.9 memory-pressure/uninstall-safety release.
+PKG_VERSION:=0.3.9
 PKG_RELEASE:=1
 PKG_MAINTAINER:=godsun.pro
 PKG_LICENSE:=GPL-2.0-only
