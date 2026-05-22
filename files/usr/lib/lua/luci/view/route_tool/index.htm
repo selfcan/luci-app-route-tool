@@ -334,7 +334,12 @@ function updateEmmcFromKV(d) {
       '<div class="rt-k">状态</div><div>' + esc(d.eMMC_STATUS || '-') + '</div>' +
       '<div class="rt-k">寿命估算</div><div>' + esc(d.EMMC_LIFE_TEXT || d.eMMC_HEALTH || '-') + '</div>' +
       '<div class="rt-k">PRE_EOL</div><div>' + esc(d.EMMC_PRE_EOL_TEXT || d.eMMC_EOL_DEC || '-') + '</div>' +
-      '<div class="rt-k">TYP_A/B</div><div>' + esc(d.EMMC_LIFE_A_DEC || d.eMMC_SLC_DEC || '-') + ' / ' + esc(d.EMMC_LIFE_B_DEC || d.eMMC_MLC_DEC || '-') + '</div>';
+      '<div class="rt-k">TYP_A/B</div><div>' + esc(d.EMMC_LIFE_A_DEC || d.eMMC_SLC_DEC || '-') + ' / ' + esc(d.EMMC_LIFE_B_DEC || d.eMMC_MLC_DEC || '-') + '</div>' +
+      (d.EMMC_MANUFACTURER ? '<div class="rt-k">颗粒品牌</div><div>' + esc(d.EMMC_MANUFACTURER) + '</div>' : '') +
+      (d.EMMC_VERSION ? '<div class="rt-k">eMMC 版本</div><div>' + esc(d.EMMC_VERSION) + '</div>' : '') +
+      (d.EMMC_BOOT1_SIZE_KB ? '<div class="rt-k">BOOT1/2</div><div>' + fmtKB(d.EMMC_BOOT1_SIZE_KB) + ' / ' + fmtKB(d.EMMC_BOOT2_SIZE_KB) + '</div>' : '') +
+      (d.EMMC_RPMB_SIZE_KB && parseInt(d.EMMC_RPMB_SIZE_KB) > 0 ? '<div class="rt-k">RPMB</div><div>' + fmtKB(d.EMMC_RPMB_SIZE_KB) + '</div>' : '') +
+      (d.EMMC_CID ? '<div class="rt-k">CID</div><div><span class="rt-small">' + esc(d.EMMC_CID) + '</span></div>' : '');
   }
 }
 

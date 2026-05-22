@@ -68,3 +68,38 @@ echo "EMMC_LIFE_USED_PCT=${USED_PCT}"
 echo "EMMC_LIFE_LEFT_PCT=${LEFT_PCT}"
 echo "EMMC_LIFE_USED_RANGE=${USED_RANGE}"
 echo "EMMC_LIFE_TEXT=${LIFE_TEXT}"
+
+# ── eMMC 硬件诊断信息 ──
+MMC_SYS=""
+for d in /sys/class/mmc_host/mmc*/mmc*:*; do
+    [ -d "$d" ] && { MMC_SYS="$d"; break; }
+done
+if [ -n "$MMC_SYS" ]; then
+    CID_RAW="$(cat "$MMC_SYS/cid" 2>/dev/null | tr -d '\n ')"
+    [ -n "$CID_RAW" ] && echo "EMMC_CID=$CID_RAW"
+    MANFID="$(printf '%s' "$CID_RAW" | cut -c1-2)"
+    echo "EMMC_MANUFACTURER=$(rt_emmc_manf_name "$MANFID")"
+    if [ -n "$EXT_CSD" ]; then
+        BOOT1_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 226)"
+        BOOT2_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 227)"
+        BOOT1_KB=$(( $(rt_hex2dec "$BOOT1_HEX") * 128 ))
+        BOOT2_KB=$(( $(rt_hex2dec "$BOOT2_HEX") * 128 ))
+        echo "EMMC_BOOT1_SIZE_KB=$BOOT1_KB"
+        echo "EMMC_BOOT2_SIZE_KB=$BOOT2_KB"
+        RPMB_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 222)"
+        RPMB_KB=$(( $(rt_hex2dec "$RPMB_HEX") * 128 ))
+        echo "EMMC_RPMB_SIZE_KB=$RPMB_KB"
+        VER_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 192)"
+        VER_DEC="$(rt_hex2dec "$VER_HEX")"
+        case "$VER_DEC" in
+            0) VER_TXT="4.0" ;; 1) VER_TXT="4.1" ;;
+            2) VER_TXT="4.2" ;; 3) VER_TXT="4.3" ;;
+            4) VER_TXT="4.4" ;; 5) VER_TXT="4.41" ;;
+            6) VER_TXT="4.5" ;; 7) VER_TXT="5.0" ;;
+            8) VER_TXT="5.01" ;; 9) VER_TXT="5.1" ;;
+            10) VER_TXT="5.1B" ;; *) VER_TXT="未知(0x$VER_HEX)" ;;
+        esac
+        echo "EMMC_VERSION=$VER_TXT"
+        echo "EMMC_VERSION_RAW=0x$VER_HEX"
+    fi
+fi
