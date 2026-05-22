@@ -76,7 +76,7 @@
     <div class="rt-card"><div class="rt-title">🌐 网口</div><div class="rt-val" id="port-val">--</div><div class="rt-meta rt-kv" id="port-kv"></div></div>
     <div class="rt-card"><div class="rt-title">💽 容量</div><div class="rt-val" id="storage-val">--</div><div class="rt-meta rt-kv" id="storage-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🔲 eMMC 寿命估算 <span class="rt-badge" id="emmc-detect">检测中</span></div><div class="rt-val" id="eol-val">--</div><div class="rt-bar"><i id="eol-bar" style="width:0%"></i></div><div class="rt-meta rt-kv" id="emmc-kv"></div></div>
-    <div class="rt-card"><div class="rt-title">🚀 eMMC 读写速度</div><div class="rt-val" id="speed-val">--</div><div class="rt-meta" id="speed-sub">等待测速</div></div>
+    <div class="rt-card"><div class="rt-title">🚀 eMMC 读写速度</div><div class="rt-val" id="speed-val">--</div><div class="rt-meta" id="speed-sub">等待测速</div><div class="rt-meta rt-kv" id="speed-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🧠 内存压力检测 <span class="rt-badge" style="background:#fff3cd;border-color:#ffc107;color:#856404">仅供参考</span></div><div class="rt-val" id="mem-val" style="font-size:20px">--</div><div class="rt-meta" id="mem-sub">写入/tmp(tmpfs)制造内存压力，不代表真实带宽</div></div>
     <div class="rt-card"><div class="rt-title">💾 NAND <span class="rt-badge" id="nand-detect">检测中</span></div><div class="rt-val" id="nand-val">--</div><div class="rt-meta rt-kv" id="nand-kv"></div></div>
     <div class="rt-card"><div class="rt-title">📜 开机日志</div><div class="rt-val" id="bootlog-val">--</div><div class="rt-meta" id="bootlog-sub">点击“开机日志”查看中文解释</div></div>
@@ -341,7 +341,27 @@ function updateEmmcFromKV(d) {
 function updateSpeedFromKV(d) {
   if (!hasAny(d, ['SEQ_WRITE_SPEED', 'SEQ_READ_SPEED'])) return;
   qs('#speed-val').textContent = (d.SEQ_WRITE_SPEED || '?') + '/' + (d.SEQ_READ_SPEED || '?') + ' MB/s';
-  qs('#speed-sub').textContent = '测速完成：写入/读取';
+  qs('#speed-sub').textContent = '写入/读取';
+  // eMMC diagnostic info from speed test
+  var skv = qs('#speed-kv');
+  if (skv) {
+    var info = [];
+    if (d.EMMC_MANUFACTURER) info.push('颗粒: ' + d.EMMC_MANUFACTURER);
+    if (d.EMMC_VERSION) info.push('eMMC ' + d.EMMC_VERSION);
+    if (d.EMMC_BOOT1_SIZE_KB) info.push('BOOT1: ' + fmtKB(d.EMMC_BOOT1_SIZE_KB));
+    if (d.EMMC_BOOT2_SIZE_KB) info.push('BOOT2: ' + fmtKB(d.EMMC_BOOT2_SIZE_KB));
+    if (d.EMMC_RPMB_SIZE_KB && d.EMMC_RPMB_SIZE_KB !== '0') info.push('RPMB: ' + fmtKB(d.EMMC_RPMB_SIZE_KB));
+    if (d.EMMC_CID) info.push('CID: ' + d.EMMC_CID);
+    skv.innerHTML = info.length ? info.join(' &nbsp;|&nbsp; ') : '';
+  }
+}
+
+function fmtKB(kb) {
+  if (!kb || kb === '0') return '0KB';
+  kb = parseInt(kb);
+  if (kb >= 1048576) return (kb/1048576).toFixed(1) + 'GB';
+  if (kb >= 1024) return (kb/1024).toFixed(0) + 'MB';
+  return kb + 'KB';
 }
 
 function updateMemoryFromKV(d) {

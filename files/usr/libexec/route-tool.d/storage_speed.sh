@@ -186,3 +186,51 @@ echo "EMMC_FREE_MB_AFTER=${EMMC_FREE_AFTER}"
 echo "TMP_FREE_MB_AFTER=${TMP_FREE_AFTER}"
 echo "CLEANUP_DONE=1"
 echo "SPEED_TEST_DONE=1"
+
+# ── eMMC 诊断信息（测速同时采集）──
+MMC_SYS=""
+for d in /sys/class/mmc_host/mmc*/mmc*:*; do
+    [ -d "$d" ] && { MMC_SYS="$d"; break; }
+done
+
+if [ -n "$MMC_SYS" ]; then
+    # CID
+    CID_RAW="$(cat "$MMC_SYS/cid" 2>/dev/null | tr -d '\n ')"
+    [ -n "$CID_RAW" ] && echo "EMMC_CID=$CID_RAW"
+
+    # Manufacturer from CID first byte
+    MANFID="$(printf '%s' "$CID_RAW" | cut -c1-2)"
+    SCRIPT_DIR="${0%/*}"; [ "$SCRIPT_DIR" = "$0" ] && SCRIPT_DIR="."
+    . "$SCRIPT_DIR/storage_common.sh"
+    echo "EMMC_MANUFACTURER=$(rt_emmc_manf_name "$MANFID")"
+
+    # BOOT1/BOOT2 size from ext_csd bytes 226/227 (unit: 128KB)
+    EXT_CSD="$(rt_read_ext_csd 300 2>/dev/null || true)"
+    if [ -n "$EXT_CSD" ]; then
+        BOOT1_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 226)"
+        BOOT2_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 227)"
+        BOOT1_KB=$(( $(rt_hex2dec "$BOOT1_HEX") * 128 ))
+        BOOT2_KB=$(( $(rt_hex2dec "$BOOT2_HEX") * 128 ))
+        echo "EMMC_BOOT1_SIZE_KB=$BOOT1_KB"
+        echo "EMMC_BOOT2_SIZE_KB=$BOOT2_KB"
+
+        # RPMB size (byte 222, unit: 128KB)
+        RPMB_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 222)"
+        RPMB_KB=$(( $(rt_hex2dec "$RPMB_HEX") * 128 ))
+        echo "EMMC_RPMB_SIZE_KB=$RPMB_KB"
+
+        # eMMC version (byte 192)
+        VER_HEX="$(rt_ext_csd_byte_hex "$EXT_CSD" 192)"
+        VER_DEC="$(rt_hex2dec "$VER_HEX")"
+        case "$VER_DEC" in
+            0) VER_TXT="4.0" ;; 1) VER_TXT="4.1" ;;
+            2) VER_TXT="4.2" ;; 3) VER_TXT="4.3" ;;
+            4) VER_TXT="4.4" ;; 5) VER_TXT="4.41" ;;
+            6) VER_TXT="4.5" ;; 7) VER_TXT="5.0" ;;
+            8) VER_TXT="5.01" ;; 9) VER_TXT="5.1" ;;
+            10) VER_TXT="5.1B" ;; *) VER_TXT="未知(0x$VER_HEX)" ;;
+        esac
+        echo "EMMC_VERSION=$VER_TXT"
+        echo "EMMC_VERSION_RAW=0x$VER_HEX"
+    fi
+fi
