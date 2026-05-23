@@ -1,4 +1,10 @@
-*.o
+# Build artifacts
+*.ipk
+
+# Internal task tracking
+TASK_CODE_QUALITY.md
+
+# OS/editor
+.DS_Store
 *.pyc
 __pycache__/
-.DS_Store

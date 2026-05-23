@@ -22,7 +22,7 @@ OpenWrt LuCI 插件：路由器存储健康诊断 + 分区管理 + 网口检测 
 curl -L -o /tmp/route-tool.ipk https://godsun.pro/upload/luci-app-route-tool_0.3.10_all.ipk && opkg install --force-reinstall /tmp/route-tool.ipk && rm -f /tmp/route-tool.ipk
 ```
 
-或从 [GitHub Releases](https://github.com/rothdren-lion/luci-app-route-tool/releases) 下载 IPK 手动安装：
+或从 [Releases](../../releases) 下载 IPK 手动安装：
 
 ```bash
 opkg install luci-app-route-tool_0.3.10_all.ipk
@@ -44,14 +44,12 @@ opkg install luci-app-route-tool_0.3.10_all.ipk
 
 内置 38 家 eMMC 制造商 ID 映射（mmc-utils 官方仅 13 家），部分由 T76 编程器拆机确认：
 
-| MID | 品牌 | 来源 |
-|-----|------|------|
-| 0xd6/0x88 | Longsys(江波龙) | T76 编程器确认 |
-| 0xf4 | BIWIN(佰维) | T76 编程器确认 |
-| 0xea | SPeMMC/深圳 SPeMMC | 实测 |
-| 0x0a | GigaDevice(兆易创新) | 文档 |
-| 0x01 | Samsung(三星) | mmc-utils |
-| ... | 共 38 家 | |
+- `0xd6/0x88` → Longsys(江波龙) — T76 编程器确认
+- `0xf4` → BIWIN(佰维) — T76 编程器确认
+- `0xea` → SPeMMC/深圳 — 实测
+- `0x0a` → GigaDevice(兆易创新) — 文档
+- `0x01` → Samsung(三星) — mmc-utils
+- 共 38 家，覆盖主流国际 + 国产品牌
 
 ### 分区操作危险提示
 
@@ -64,14 +62,35 @@ opkg install luci-app-route-tool_0.3.10_all.ipk
 - 联发科 MT7621 系列（NAND/NOR）
 - 其他 OpenWrt 设备（部分功能可用）
 
+## 文件结构
+
+```
+files/usr/lib/lua/luci/controller/route_tool.lua   — LuCI 控制器
+files/usr/lib/lua/luci/view/route_tool/index.htm   — 前端页面
+files/usr/libexec/route-tool                         — 主后端：分区检测/备份/写入
+files/usr/libexec/route-tool.d/
+  storage_common.sh    — 共享函数库（ext_csd/制造商映射/缓存）
+  storage_system.sh    — SoC/网口/CoreMark/WiFi
+  storage_speed.sh     — eMMC 顺序读写测速
+  storage_memory.sh    — 内存压力测试
+  storage_capacity.sh  — 容量详情
+  storage_health.sh    — eMMC 健康度（ext_csd）
+  storage_detail.sh    — eMMC CID/详情
+  storage_nand.sh      — NAND 信息
+  storage_bootlog.sh   — 启动日志分析
+  storage_smart.sh     — 综合诊断入口
+  storage_analyze.sh   — eMMC 完整分析报告
+```
+
 ## 版本历史
 
 ### v0.3.10
+- 🏷️ eMMC 版本增强：byte192 报 5.01 但 CMDQ>0 时提示可能为 5.1
 - 🎨 容量卡：无 NAND 时隐藏 NAND 总量行
-- 🏷️ 制造商映射：0xea=SPeMMC/深圳 SPeMMC
+- 🏷️ 制造商映射：0xea=SPeMMC/深圳
 
 ### v0.3.9
-- 🧩 MTK eMMC 分区补全：bl2/fip/u-boot-env 纳入可操作分区
+- 🧩 MTK eMMC 分区补全：bl2/fip 纳入可操作分区
 - 🏷️ eMMC 制造商库扩充至 38 家（含 BIWIN 佰维 0xf4）
 - 🚀 测速同时显示诊断信息：颗粒品牌、BOOT1/BOOT2、RPMB、eMMC 版本、CID
 
@@ -81,11 +100,11 @@ opkg install luci-app-route-tool_0.3.10_all.ipk
 - 📦 安装→卸载→重装循环验证通过
 
 ### v0.3.7
-- 代码质量修复：统一 ext_csd 偏移量、修复 PRE_EOL bug
-- 统一制造商 ID 映射
+- 🔧 代码质量修复：统一 ext_csd 偏移量、修复 PRE_EOL bug
+- 🔧 统一制造商 ID 映射为单一来源
 
 ### v0.3.6
-- 初始公开版本
+- 🎉 初始公开版本
 
 ## 技术栈
 
@@ -95,4 +114,4 @@ opkg install luci-app-route-tool_0.3.10_all.ipk
 
 ## License
 
-MIT
+MIT © 数码罗记 · godsun.pro

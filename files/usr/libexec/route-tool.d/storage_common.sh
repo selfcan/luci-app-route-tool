@@ -71,13 +71,10 @@ rt_emmc_manf_name() {
         74) echo "Transcend(创见)" ;;
         76) echo "Patriot( Patriot)" ;;
         82) echo "Gobe/Sony(索尼)" ;;
-        90) echo "SK Hynix(海力士)" ;;
-        9B) echo "YMTC/长江存储" ;;
         # 国产/代工
         88|d6) echo "Longsys(江波龙)" ;;
         f4) echo "BIWIN(佰维)" ;;
         ea) echo "SPeMMC/深圳 SPeMMC" ;;
-        2f) echo "康芯威" ;;
         fe) echo "Micron(美光)" ;;
         # 未知
         "") echo "未知" ;;
