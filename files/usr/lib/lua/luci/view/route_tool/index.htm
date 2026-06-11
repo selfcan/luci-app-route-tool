@@ -56,7 +56,7 @@
 </style>
 
 <div class="rt-wrap">
-  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%><span class="rt-page-version">v0.3.13</span><span id="ota-badge" class="rt-ota-badge" onclick="installPluginUpdate()" title="点击在线更新插件">可更新</span></h2>
+  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%><span class="rt-page-version">v0.3.14</span><span id="ota-badge" class="rt-ota-badge" onclick="installPluginUpdate()" title="点击在线更新插件">可更新</span></h2>
   <div class="rt-warn">
     <b>危险提示：</b>写入分区操作很危险，请确定知道自己在玩什么！对应位置写错文件必砖！
   </div>
@@ -384,6 +384,7 @@ function updateEmmcFromKV(d) {
   if (box) {
     box.innerHTML =
       '<div class="rt-k">状态</div><div>' + esc(d.eMMC_STATUS || '-') + '</div>' +
+      '<div class="rt-k">剩余状态</div><div>' + (pct !== '' ? ('约剩余 ' + esc(pct) + '%') : '-') + '</div>' +
       '<div class="rt-k">寿命估算</div><div>' + esc(d.EMMC_LIFE_TEXT || d.eMMC_HEALTH || '-') + '</div>' +
       '<div class="rt-k">PRE_EOL</div><div>' + esc(d.EMMC_PRE_EOL_TEXT || d.eMMC_EOL_DEC || '-') + '</div>' +
       '<div class="rt-k">TYP_A/B</div><div>' + esc(d.EMMC_LIFE_A_DEC || d.eMMC_SLC_DEC || '-') + ' / ' + esc(d.EMMC_LIFE_B_DEC || d.eMMC_MLC_DEC || '-') + '</div>' +
@@ -425,6 +426,17 @@ function updateMemoryFromKV(d) {
   if (!hasAny(d, ['MEM_TOTAL_MB', 'MEM_PRESSURE_VERDICT', 'MEM_VERDICT', 'MEM_RESULT_TEXT', 'MEM_WRITTEN_MB', 'MEM_WRITE_SPEED', 'MEM_CAPACITY_STATUS'])) return;
   var mv = qs('#mem-val');
   var ms = qs('#mem-sub');
+  if (d.MEM_TOTAL_MB && !d.MEM_CAPACITY_STATUS && !d.MEM_PRESSURE_VERDICT && !d.MEM_VERDICT && !d.MEM_WRITTEN_MB) {
+    var free = d.MEM_AVAILABLE_MB || d.MEM_FREE_MB || 0;
+    var total = d.MEM_TOTAL_MB || 0;
+    var used = d.MEM_USED_MB || (total && free ? (parseInt(total, 10) - parseInt(free, 10)) : 0);
+    if (mv) {
+      mv.textContent = '剩余 ' + fmtMB(free);
+      mv.className = 'rt-val ' + (d.MEM_FREE_PCT && parseInt(d.MEM_FREE_PCT, 10) < 15 ? 'warnc' : 'good');
+    }
+    if (ms) ms.textContent = '运行 ' + fmtMB(used) + ' / 总量 ' + fmtMB(total) + '，剩余 ' + (d.MEM_FREE_PCT || '-') + '%';
+    return;
+  }
   // Capacity mode (memtester)
   if (d.MEM_CAPACITY_STATUS) {
     if (mv) {

@@ -26,6 +26,15 @@ FREE_MEM=$(grep MemAvailable /proc/meminfo | awk '{print $2}')
 [ -n "$FREE_MEM" ] || FREE_MEM=0
 TOTAL_MB=$((TOTAL_MEM / 1024))
 FREE_MB=$((FREE_MEM / 1024))
+USED_MB=$((TOTAL_MB - FREE_MB))
+[ "$USED_MB" -lt 0 ] && USED_MB=0
+if [ "$TOTAL_MB" -gt 0 ]; then
+    USED_PCT=$((USED_MB * 100 / TOTAL_MB))
+    FREE_PCT=$((FREE_MB * 100 / TOTAL_MB))
+else
+    USED_PCT=0
+    FREE_PCT=0
+fi
 TMP_FREE_KB=$(df -P /tmp 2>/dev/null | awk 'NR==2 {print $4}')
 [ -n "$TMP_FREE_KB" ] || TMP_FREE_KB=0
 TMP_FREE_MB=$((TMP_FREE_KB / 1024))
@@ -123,6 +132,9 @@ echo "MEM_FREE_KB=${FREE_MEM}"
 echo "MEM_FREE_MB=${FREE_MB}"
 echo "MEM_AVAILABLE_KB=${FREE_MEM}"
 echo "MEM_AVAILABLE_MB=${FREE_MB}"
+echo "MEM_USED_MB=${USED_MB}"
+echo "MEM_USED_PCT=${USED_PCT}"
+echo "MEM_FREE_PCT=${FREE_PCT}"
 echo "MEM_TMP_FREE_KB=${TMP_FREE_KB}"
 echo "MEM_TMP_FREE_MB=${TMP_FREE_MB}"
 echo "MEM_MODE=${MODE}"

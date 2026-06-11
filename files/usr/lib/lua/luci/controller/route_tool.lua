@@ -12,7 +12,7 @@ function index()
     entry({"admin", "system", "route_tool", "health"}, call("health"), nil).leaf = true
 end
 
-local CURRENT_VERSION = "0.3.13-1"
+local CURRENT_VERSION = "0.3.14-1"
 local UPDATE_BASE_URL = "https://github.com/rothdren-lion/luci-app-route-tool/releases/latest/download"
 local UPDATE_VERSION_URL = UPDATE_BASE_URL .. "/VERSION"
 local UPDATE_IPK_URL = UPDATE_BASE_URL .. "/luci-app-route-tool_all.ipk"
@@ -256,6 +256,8 @@ function health()
         luci.http.write(run_storage("storage_nand.sh", "", "2>/dev/null"))
         luci.http.write("\n")
         luci.http.write(run_storage("storage_detail.sh", "", "2>/dev/null"))
+        luci.http.write("\n")
+        luci.http.write(run_storage("storage_memory.sh", "info", "2>/dev/null"))
     elseif action == "emmc" then
         luci.http.write(run_storage("storage_health.sh", "", "2>/dev/null"))
         luci.http.write("\n")
