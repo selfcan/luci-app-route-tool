@@ -74,11 +74,11 @@ done
 if [ -n "$CID" ] && [ ${#CID} -ge 16 ]; then
     MANFID=$(echo "$CID" | cut -c1-2)
     OEMID=$(echo "$CID" | cut -c3-4)
-    PRDCT=$(echo "$CID" | cut -c5-10)
+    PRDCT=$(echo "$CID" | cut -c5-16)
     SERIAL=$(echo "$CID" | cut -c15-22)
     DATE_RAW=$(echo "$CID" | cut -c23-26)
 
-    MANF="$(rt_emmc_manf_name "$MANFID")"
+    MANF="$(rt_emmc_chip_name "$MANFID" "$PRDCT")"
 
     # Decode CID date through printf-based helper; old BusyBox ash may not accept hex literals in arithmetic expansion.
     DATE_MONTH="$(rt_hex2dec "$(echo "$DATE_RAW" | cut -c1-1)")"

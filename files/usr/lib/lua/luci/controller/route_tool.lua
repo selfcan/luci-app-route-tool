@@ -8,8 +8,14 @@ function index()
     entry({"admin", "system", "route_tool", "backup"}, call("backup"), nil).leaf = true
     entry({"admin", "system", "route_tool", "write"}, call("write"), nil).leaf = true
     entry({"admin", "system", "route_tool", "sysupgrade"}, call("sysupgrade"), nil).leaf = true
+    entry({"admin", "system", "route_tool", "update"}, call("update"), nil).leaf = true
     entry({"admin", "system", "route_tool", "health"}, call("health"), nil).leaf = true
 end
+
+local CURRENT_VERSION = "0.3.13-1"
+local UPDATE_BASE_URL = "https://github.com/rothdren-lion/luci-app-route-tool/releases/latest/download"
+local UPDATE_VERSION_URL = UPDATE_BASE_URL .. "/VERSION"
+local UPDATE_IPK_URL = UPDATE_BASE_URL .. "/luci-app-route-tool_all.ipk"
 
 local function allowed_part(p)
     return p == "gpt" or p == "cdt" or p == "art" or p == "ART" or p == "appsbl" or p == "factory" or p == "mibib" or p == "bl2" or p == "BL2" or p == "fip" or p == "FIP" or p == "config" or p == "Config" or p == "u-boot" or p == "uboot"
@@ -120,6 +126,63 @@ function write()
     luci.http.write_json({ ok = true, message = out })
 end
 
+local function json_error(message)
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({ ok = false, message = message })
+end
+
+local function trim(s)
+    return tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function update_fetch_cmd(url, out)
+    return "(command -v curl >/dev/null 2>&1 && curl -fsSL --connect-timeout 12 --max-time 60 " .. shellquote(url) .. " -o " .. shellquote(out) .. ") || (command -v wget >/dev/null 2>&1 && wget -q -T 60 -O " .. shellquote(out) .. " " .. shellquote(url) .. ")"
+end
+
+function update()
+    local sys = require "luci.sys"
+    local fs = require "nixio.fs"
+    local action = luci.http.formvalue("action") or "check"
+    luci.http.prepare_content("application/json")
+
+    if action == "check" then
+        local tmp = "/tmp/route-tool-latest-version.txt"
+        os.remove(tmp)
+        local rc = sys.call(update_fetch_cmd(UPDATE_VERSION_URL, tmp) .. " >/tmp/route-tool-update-check.log 2>&1")
+        local latest = trim(fs.readfile(tmp) or "")
+        os.remove(tmp)
+        if rc ~= 0 or latest == "" then
+            local msg = sys.exec("tail -n 5 /tmp/route-tool-update-check.log 2>/dev/null")
+            luci.http.write_json({ ok = false, current = CURRENT_VERSION, message = "检查更新失败。" .. (msg ~= "" and ("\n" .. msg) or "") })
+            return
+        end
+        luci.http.write_json({ ok = true, current = CURRENT_VERSION, latest = latest, update_available = (latest ~= CURRENT_VERSION), ipk_url = UPDATE_IPK_URL })
+        return
+    elseif action == "install" then
+        local confirm = luci.http.formvalue("confirm") or ""
+        if confirm ~= "YES" then
+            luci.http.write_json({ ok = false, current = CURRENT_VERSION, message = "缺少确认参数，已取消在线更新。" })
+            return
+        end
+        local tmp = "/tmp/luci-app-route-tool-ota.ipk"
+        os.remove(tmp)
+        local rc = sys.call(update_fetch_cmd(UPDATE_IPK_URL, tmp) .. " >/tmp/route-tool-update-install.log 2>&1")
+        if rc ~= 0 or not fs.access(tmp) then
+            local msg = sys.exec("tail -n 8 /tmp/route-tool-update-install.log 2>/dev/null")
+            luci.http.write_json({ ok = false, current = CURRENT_VERSION, message = "下载更新包失败。" .. (msg ~= "" and ("\n" .. msg) or "") })
+            return
+        end
+        local out = sys.exec("opkg install --force-reinstall " .. shellquote(tmp) .. " 2>&1")
+        sys.call("rm -rf /tmp/luci-indexcache /tmp/luci-modulecache/* /tmp/luci-* 2>/dev/null || true")
+        sys.call("/etc/init.d/rpcd restart >/dev/null 2>&1 || true")
+        sys.call("/etc/init.d/uhttpd restart >/dev/null 2>&1 || true")
+        luci.http.write_json({ ok = true, current = CURRENT_VERSION, message = out ~= "" and out or "在线更新已完成，LuCI 已刷新。" })
+        return
+    end
+
+    luci.http.write_json({ ok = false, current = CURRENT_VERSION, message = "未知更新动作。" })
+end
+
 function sysupgrade()
     local fs = require "nixio.fs"
     local sys = require "luci.sys"
@@ -201,10 +264,29 @@ function health()
         luci.http.write(run_storage("storage_memory.sh", "info", "2>/dev/null"))
     elseif action == "memory_quick" then
         -- Quick pressure: ~25% of available, capped 64-256MB, keeps /tmp reserve for LuCI/SSH.
-        luci.http.write(run_storage("storage_memory.sh", "quick", "2>&1"))
+        local qsize = luci.http.formvalue("size_mb") or ""
+        local qargs = "quick"
+        if qsize and tonumber(qsize) and tonumber(qsize) > 0 then
+            qargs = "quick " .. tostring(math.floor(tonumber(qsize)))
+        end
+        luci.http.write(run_storage("storage_memory.sh", qargs, "2>&1"))
     elseif action == "memory_standard" then
         -- Standard pressure: ~60% of available, capped 128-1024MB, keeps /tmp reserve.
-        luci.http.write(run_storage("storage_memory.sh", "standard", "2>&1"))
+        local ssize = luci.http.formvalue("size_mb") or ""
+        local sargs = "standard"
+        if ssize and tonumber(ssize) and tonumber(ssize) > 0 then
+            sargs = "standard " .. tostring(math.floor(tonumber(ssize)))
+        end
+        luci.http.write(run_storage("storage_memory.sh", sargs, "2>&1"))
+    elseif action == "memory_capacity" then
+        -- Capacity test: real memtester if available, else fallback to tmpfs pressure.
+        -- Optional size_mb parameter for dropdown/manual override.
+        local size_mb = luci.http.formvalue("size_mb") or ""
+        local cap_args = "capacity"
+        if size_mb and tonumber(size_mb) and tonumber(size_mb) > 0 then
+            cap_args = "capacity " .. tostring(math.floor(tonumber(size_mb)))
+        end
+        luci.http.write(run_storage("storage_memory.sh", cap_args, "2>&1"))
     elseif action == "memory_full" then
         -- Full pressure: fill /tmp until ENOSPC (No space left on device = PASS).
         -- WARNING: this may briefly make LuCI/SSH unresponsive until cleanup runs.

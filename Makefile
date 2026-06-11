@@ -1,9 +1,8 @@
-# by 数码罗记 · godsun.pro
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-route-tool
-# Keep Makefile and CONTROL/control aligned for the 0.3.10 eMMC-version-CMDQ-detection/uninstall-safety release.
-PKG_VERSION:=0.3.10
+# Keep Makefile and CONTROL/control aligned for the 0.3.13 GitHub OTA release.
+PKG_VERSION:=0.3.13
 PKG_RELEASE:=1
 PKG_MAINTAINER:=godsun.pro
 PKG_LICENSE:=GPL-2.0-only

@@ -5,6 +5,9 @@
 .rt-health-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin:14px 0}
 .rt-card{background:var(--cbi-section-bg,#fff);border:1px solid var(--border-color,#ddd);border-radius:10px;padding:14px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
 .rt-title{font-size:18px;font-weight:700;margin-bottom:6px}
+.rt-page-version{font-size:13px;font-weight:500;opacity:.62;margin-left:6px;vertical-align:baseline}
+.rt-ota-badge{display:none;font-size:12px;font-weight:600;margin-left:8px;padding:2px 7px;border-radius:999px;background:#fff3cd;border:1px solid #ffd666;color:#8a5a00;cursor:pointer;vertical-align:baseline}
+.rt-ota-badge.show{display:inline-block}
 .rt-meta{font-size:12px;opacity:.82;line-height:1.7;word-break:break-all}
 .rt-val{font-size:26px;font-weight:800;margin:8px 0}
 .good{color:#27ae60}
@@ -53,7 +56,7 @@
 </style>
 
 <div class="rt-wrap">
-  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%></h2>
+  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%><span class="rt-page-version">v0.3.13</span><span id="ota-badge" class="rt-ota-badge" onclick="installPluginUpdate()" title="点击在线更新插件">可更新</span></h2>
   <div class="rt-warn">
     <b>危险提示：</b>写入分区操作很危险，请确定知道自己在玩什么！对应位置写错文件必砖！
   </div>
@@ -64,9 +67,14 @@
     <button class="rt-tab rt-green" onclick="runHealth('capacity',this)">容量详情</button>
     <button class="rt-tab rt-cyan" onclick="runHealth('ports',this)">网口检测</button>
     <button class="rt-tab rt-orange" onclick="runHealth('speed',this)">eMMC测速</button>
-    <button class="rt-tab rt-green" onclick="runHealth('memory_quick',this)">内存压力(轻)</button>
-    <button class="rt-tab rt-green" onclick="runHealth('memory_standard',this)">内存压力(标准)</button>
-    <button class="rt-tab rt-orange" onclick="runHealth('memory_full',this)">内存压力(写满)</button>
+    <button class="rt-tab rt-green" onclick="runMemTest(this)">🧠 内存测试</button>
+    <select id="mem-mode" style="padding:6px 10px;border-radius:20px;border:1px solid #ddd;font-weight:700;font-size:13px">
+      <option value="quick">压力(轻 25%)</option>
+      <option value="standard">压力(标准 60%)</option>
+      <option value="full">压力(写满)</option>
+      <option value="capacity" selected>完整性(memtester)</option>
+    </select>
+    <input id="mem-size" type="number" min="16" placeholder="自定义MB" style="width:80px;padding:6px 10px;border-radius:20px;border:1px solid #ddd;font-size:13px">
     <button class="rt-tab rt-gray" onclick="runHealth('bootlog',this)">开机日志</button>
     <button class="rt-tab rt-purple" onclick="runHealth('analyze',this)">完整分析</button>
   </div>
@@ -77,7 +85,7 @@
     <div class="rt-card"><div class="rt-title">💽 容量</div><div class="rt-val" id="storage-val">--</div><div class="rt-meta rt-kv" id="storage-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🔲 eMMC 寿命估算 <span class="rt-badge" id="emmc-detect">检测中</span></div><div class="rt-val" id="eol-val">--</div><div class="rt-bar"><i id="eol-bar" style="width:0%"></i></div><div class="rt-meta rt-kv" id="emmc-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🚀 eMMC 读写速度</div><div class="rt-val" id="speed-val">--</div><div class="rt-meta" id="speed-sub">等待测速</div><div class="rt-meta rt-kv" id="speed-kv"></div></div>
-    <div class="rt-card"><div class="rt-title">🧠 内存压力检测 <span class="rt-badge" style="background:#fff3cd;border-color:#ffc107;color:#856404">仅供参考</span></div><div class="rt-val" id="mem-val" style="font-size:20px">--</div><div class="rt-meta" id="mem-sub">写入/tmp(tmpfs)制造内存压力，不代表真实带宽</div></div>
+    <div class="rt-card"><div class="rt-title">🧠 内存检测 <span class="rt-badge" style="background:#fff3cd;border-color:#ffc107;color:#856404">下拉选择模式</span></div><div class="rt-val" id="mem-val" style="font-size:20px">--</div><div class="rt-meta" id="mem-sub">下拉选模式，点"内存测试"按钮执行；选"完整性"需先上传 memtester 到 /tmp/</div></div>
     <div class="rt-card"><div class="rt-title">💾 NAND <span class="rt-badge" id="nand-detect">检测中</span></div><div class="rt-val" id="nand-val">--</div><div class="rt-meta rt-kv" id="nand-kv"></div></div>
     <div class="rt-card"><div class="rt-title">📜 开机日志</div><div class="rt-val" id="bootlog-val">--</div><div class="rt-meta" id="bootlog-sub">点击“开机日志”查看中文解释</div></div>
   </div>
@@ -239,6 +247,50 @@ function fwStatus(msg, cls) {
   el.textContent = msg || '';
 }
 
+function setOtaBadge(show, latest) {
+  var el = qs('#ota-badge');
+  if (!el) return;
+  el.className = 'rt-ota-badge' + (show ? ' show' : '');
+  if (latest) {
+    el.textContent = '可更新 ' + latest.replace(/^-?v?/, 'v');
+    el.title = '发现新版本 ' + latest + '，点击在线更新插件';
+  }
+}
+
+function checkPluginUpdate(force) {
+  var key = 'route_tool_ota_check_v1';
+  var now = Date.now();
+  try {
+    var cached = JSON.parse(localStorage.getItem(key) || '{}');
+    if (!force && cached.ts && now - cached.ts < 86400000) {
+      setOtaBadge(!!cached.update_available, cached.latest);
+      return;
+    }
+  } catch(e) {}
+  fetch(API_BASE + '/update?action=check', {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      try { localStorage.setItem(key, JSON.stringify({ts: now, latest: j.latest || '', update_available: !!j.update_available})); } catch(e) {}
+      setOtaBadge(j.ok && j.update_available, j.latest);
+    })
+    .catch(function(){ setOtaBadge(false); });
+}
+
+function installPluginUpdate() {
+  if (!confirm('确认从 GitHub Releases 下载并更新 Route Tool 插件？\n\n会执行 opkg 覆盖安装，并刷新 LuCI/rpcd/uhttpd。')) return;
+  log('正在下载并安装 GitHub 最新版 IPK...');
+  fetch(API_BASE + '/update?action=install&confirm=YES', {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(function(j){
+      log((j.ok ? '更新完成：' : '更新失败：') + (j.message || ''));
+      if (j.ok) {
+        try { localStorage.removeItem('route_tool_ota_check_v1'); } catch(e) {}
+        setOtaBadge(false);
+      }
+    })
+    .catch(function(e){ log('更新失败：' + e); });
+}
+
 function backup(part) {
   window.location = API_BASE + '/backup?part=' + encodeURIComponent(part);
 }
@@ -370,9 +422,37 @@ function fmtKB(kb) {
 }
 
 function updateMemoryFromKV(d) {
-  if (!hasAny(d, ['MEM_TOTAL_MB', 'MEM_PRESSURE_VERDICT', 'MEM_VERDICT', 'MEM_RESULT_TEXT', 'MEM_WRITTEN_MB', 'MEM_WRITE_SPEED'])) return;
+  if (!hasAny(d, ['MEM_TOTAL_MB', 'MEM_PRESSURE_VERDICT', 'MEM_VERDICT', 'MEM_RESULT_TEXT', 'MEM_WRITTEN_MB', 'MEM_WRITE_SPEED', 'MEM_CAPACITY_STATUS'])) return;
   var mv = qs('#mem-val');
   var ms = qs('#mem-sub');
+  // Capacity mode (memtester)
+  if (d.MEM_CAPACITY_STATUS) {
+    if (mv) {
+      if (d.MEM_CAPACITY_STATUS === 'PASS') {
+        mv.textContent = '✅ 完整性通过';
+        mv.className = 'rt-val good';
+      } else if (d.MEM_CAPACITY_STATUS === 'NO_MEMTESTER') {
+        mv.textContent = '⚠️ 无 memtester';
+        mv.className = 'rt-val warnc';
+      } else {
+        mv.textContent = '❌ 完整性失败';
+        mv.className = 'rt-val bad';
+      }
+    }
+    if (ms) {
+      var sub = '';
+      if (d.MEM_CAPACITY_STATUS === 'NO_MEMTESTER') {
+        sub = '未安装 memtester，已回退到 tmpfs 压力测试。上传 memtester 到 /tmp/ 即可启用完整性检测。';
+      } else if (d.MEM_CAPACITY_PASSED_TESTS) {
+        sub = d.MEM_CAPACITY_TEST_MB + 'MB / ' + d.MEM_CAPACITY_TOTAL_MB + 'MB 测试，覆盖率 ' + d.MEM_CAPACITY_COVERAGE + '%，' + d.MEM_CAPACITY_PASSED_TESTS + ' 全通过';
+      } else {
+        sub = d.MEM_RESULT_TEXT || '完整性检测完成';
+      }
+      ms.textContent = sub;
+    }
+    return;
+  }
+  // Original tmpfs pressure mode
   if (mv) {
     if (d.MEM_PRESSURE_VERDICT || d.MEM_VERDICT) {
       var verdict = d.MEM_PRESSURE_VERDICT || d.MEM_VERDICT || '--';
@@ -390,6 +470,23 @@ function updateMemoryFromKV(d) {
     if (d.MEM_REFERENCE_ONLY === '1' || d.MEM_NOTE) sub += '（仅供参考）';
     ms.textContent = sub;
   }
+}
+
+function runMemTest(btn) {
+  document.querySelectorAll('.rt-tab').forEach(function(x){ x.classList.remove('active'); });
+  if(btn) btn.classList.add('active');
+  var mode = qs('#mem-mode') ? qs('#mem-mode').value : 'quick';
+  var sizeInput = qs('#mem-size') ? qs('#mem-size').value : '';
+  var sizeMB = parseInt(sizeInput) || 0;
+  var w=qs('#log-wrap'); if(w) w.open=true;
+  log('⏳ 正在执行 内存' + (mode === 'capacity' ? '完整性(memtester)' : '压力(' + mode + ')') + ' 测试...');
+  var url = API_BASE + '/health?action=' + encodeURIComponent(mode === 'capacity' ? 'memory_capacity' : 'memory_' + mode);
+  if (sizeMB > 0 && mode === 'capacity') url += '&size_mb=' + encodeURIComponent(sizeMB);
+  else if (sizeMB > 0) url = API_BASE + '/health?action=' + encodeURIComponent('memory_' + mode) + '&size_mb=' + encodeURIComponent(sizeMB);
+  fetch(url, {credentials:'same-origin'})
+    .then(function(r){ return r.text(); })
+    .then(function(t){ log(t); updateDashFromKV(kv(t)); })
+    .catch(function(e){ log('请求失败：'+e); });
 }
 
 function updatePortsFromKV(d) {
@@ -494,7 +591,7 @@ fetch(API_BASE + '/api', {credentials:'same-origin'})
       throw new Error('API 未返回 JSON：'+t.slice(0,120));
     }
   })
-  .then(function(d){ render(d); runHealth('overview'); })
-  .catch(function(e){ qs('#summary').textContent='加载失败：'+e.message; });
+  .then(function(d){ render(d); runHealth('overview'); checkPluginUpdate(false); })
+  .catch(function(e){ qs('#summary').textContent='加载失败：'+e.message; checkPluginUpdate(false); });
 </script>
 <%+footer%>

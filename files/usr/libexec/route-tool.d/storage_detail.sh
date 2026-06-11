@@ -41,10 +41,10 @@ fi
 if [ -n "$CID" ] && [ ${#CID} -ge 16 ]; then
     MANFID=$(printf '%s' "$CID" | cut -c1-2)
     OEMID=$(printf '%s' "$CID" | cut -c3-4)
-    PRDCT=$(printf '%s' "$CID" | cut -c5-10)
+    PRDCT=$(printf '%s' "$CID" | cut -c5-16)
     SERIAL=$(printf '%s' "$CID" | cut -c15-22)
     DATE=$(printf '%s' "$CID" | cut -c23-26)
-    MANF="$(rt_emmc_manf_name "$MANFID")"
+    MANF="$(rt_emmc_chip_name "$MANFID" "$PRDCT")"
 
     # Decode CID date with shared hex conversion; BusyBox awk may not provide strtonum().
     DATE_MONTH="$(rt_hex2dec "$(printf '%s' "$DATE" | cut -c1-1)")"
@@ -59,6 +59,7 @@ if [ -n "$CID" ] && [ ${#CID} -ge 16 ]; then
     emit "MANUFACTURER=${MANF}"
     emit "OEM_ID=0x${OEMID}"
     emit "PRODUCT=${PRDCT}"
+    emit "PRODUCT_NAME=${MANF}"
     emit "SERIAL=0x${SERIAL}"
     emit "MFG_DATE=${DATE_MONTH}/${DATE_YEAR}"
 fi

@@ -1,11 +1,18 @@
 # by 数码罗记 · godsun.pro
 #!/bin/sh
-# Memory Pressure Test - tmpfs fill stability check
-# Usage: storage_memory.sh [mode:info|quick|standard|full|stress|burnin] [size_MB] [duration_sec]
+# Memory Pressure Test + Capacity Test (memtester)
+# Usage: storage_memory.sh [mode:info|quick|standard|full|stress|burnin|capacity] [size_MB] [duration_sec]
 #
-# Intent: this is not a reliable RAM bandwidth benchmark. It fills /tmp (tmpfs/RAM)
-# with /dev/zero and checks whether the router stays alive and cleanup succeeds.
-# "No space left on device" is expected for the full-fill mode and is treated as PASS.
+# Modes:
+#   info      - show memory info only
+#   quick     - tmpfs pressure ~25% available (64-256MB)
+#   standard  - tmpfs pressure ~60% available (128-1024MB)
+#   full      - tmpfs fill until ENOSPC (= PASS)
+#   stress    - repeated pressure loops for N seconds
+#   burnin    - same as stress, longer default duration
+#   capacity  - real memory test via memtester (auto-detect binary)
+#               tests MemAvailable - 64MB, safe (malloc-based, no OOM risk)
+#               falls back to tmpfs pressure if memtester not found
 
 MODE="${1:-quick}"
 SIZE="${2:-0}"
@@ -44,6 +51,25 @@ calc_speed() {
     delta=$((end - start))
     [ "$delta" -le 0 ] && delta=1
     awk -v b="$bytes" -v d="$delta" 'BEGIN { if (d<=0) d=1; printf "%.1f", (b * 10000) / (1048576 * d) }'
+}
+
+find_memtester() {
+    # Search order: bundled > /tmp > system PATH
+    local tries="/usr/libexec/route-tool.d/bin/memtester /tmp/memtester /usr/bin/memtester"
+    for p in $tries; do
+        if [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    # Last resort: which
+    local found
+    found=$(which memtester 2>/dev/null)
+    if [ -n "$found" ] && [ -x "$found" ]; then
+        echo "$found"
+        return 0
+    fi
+    return 1
 }
 
 choose_target_mb() {
@@ -111,9 +137,148 @@ fi
 
 case "$MODE" in
     quick|standard|full|stress|burnin) ;;
+    capacity) ;;
     *) MODE="quick"; echo "MEM_MODE_NORMALIZED=quick" ;;
 esac
 
+# ── capacity mode: real memtester ──
+if [ "$MODE" = "capacity" ]; then
+    echo "MEM_TEST_KIND=memtester_capacity"
+    MEMTESTER_BIN=$(find_memtester)
+    if [ -z "$MEMTESTER_BIN" ]; then
+        echo "MEM_CAPACITY_STATUS=NO_MEMTESTER"
+        echo "MEM_CAPACITY_NOTE=未找到 memtester，请上传到 /tmp/memtester 或 /usr/libexec/route-tool.d/bin/memtester"
+        echo "MEM_CAPACITY_FALLBACK=tmpfs_pressure"
+        # Fallback: run standard tmpfs pressure instead
+        echo ""
+        echo "=== 回退到 tmpfs 压力测试 ==="
+        TARGET_MB=$(choose_target_mb "standard" "$SIZE" "$TMP_FREE_MB" "$FREE_MB")
+        COUNT=$((TARGET_MB * 1024 / 8))
+        [ "$COUNT" -lt 1 ] && COUNT=1
+        REQUEST_MB=$((COUNT * 8 / 1024))
+        echo "MEM_PHASE=tmpfs_pressure_write"
+        echo "MEM_TEST_FILE=${TEST_FILE}"
+        echo "MEM_BLOCK_SIZE=8K"
+        echo "MEM_COUNT=${COUNT}"
+        echo "MEM_REQUEST_MB=${REQUEST_MB}"
+        echo "MEM_PRESSURE_TARGET_MB=${TARGET_MB}"
+        echo "MEM_EXPECTED_STOP=count_done"
+        echo "MEM_REFERENCE_ONLY=1"
+        sync
+        START=$(now_cs)
+        DD_OUT=$(dd if=/dev/zero of="$TEST_FILE" bs=8k count="$COUNT" 2>&1)
+        WRITE_RC=$?
+        END=$(now_cs)
+        WRITTEN_BYTES=$(file_size_bytes "$TEST_FILE")
+        [ -n "$WRITTEN_BYTES" ] || WRITTEN_BYTES=0
+        WRITTEN_MB=$(awk -v b="$WRITTEN_BYTES" 'BEGIN { printf "%.1f", b / 1048576 }')
+        WRITE_SPEED=$(calc_speed "$WRITTEN_BYTES" "$START" "$END")
+        WRITE_TIME_CS=$((END - START))
+        [ "$WRITE_TIME_CS" -le 0 ] && WRITE_TIME_CS=1
+        if echo "$DD_OUT" | grep -qi "No space\|space left\|ENOSPC"; then
+            STOP_REASON="tmpfs_full"
+        elif [ "$WRITE_RC" -eq 0 ]; then
+            STOP_REASON="count_done"
+        else
+            STOP_REASON="dd_error"
+        fi
+        echo "MEM_WRITTEN_BYTES=${WRITTEN_BYTES}"
+        echo "MEM_WRITTEN_MB=${WRITTEN_MB}"
+        echo "MEM_WRITE_SPEED=${WRITE_SPEED}"
+        echo "MEM_WRITE_TIME_CS=${WRITE_TIME_CS}"
+        echo "MEM_WRITE_RC=${WRITE_RC}"
+        echo "MEM_STOP_REASON=${STOP_REASON}"
+        printf '%s\n' "$DD_OUT" | sed 's/^/MEM_DD_OUT=/'
+        echo "MEM_PHASE=cleanup"
+        cleanup
+        sync
+        TMP_FREE_AFTER_KB=$(df -P /tmp 2>/dev/null | awk 'NR==2 {print $4}')
+        [ -n "$TMP_FREE_AFTER_KB" ] || TMP_FREE_AFTER_KB=0
+        echo "MEM_TMP_FREE_AFTER_KB=${TMP_FREE_AFTER_KB}"
+        echo "MEM_TMP_FREE_AFTER_MB=$((TMP_FREE_AFTER_KB / 1024))"
+        echo "MEM_CLEANUP_DONE=1"
+        if [ "$STOP_REASON" = "tmpfs_full" ] || [ "$STOP_REASON" = "count_done" ]; then
+            echo "MEM_PRESSURE_VERDICT=PASS"
+            echo "MEM_VERDICT=PASS"
+            echo "MEM_RESULT_TEXT=回退测试通过：设备保持在线，/tmp压力文件已清理（未安装memtester，仅验证基本稳定性）"
+        else
+            echo "MEM_PRESSURE_VERDICT=FAIL"
+            echo "MEM_VERDICT=FAIL"
+            echo "MEM_RESULT_TEXT=失败：dd写入异常，请检查内存、/tmp空间或系统日志"
+        fi
+        echo "MEM_TEST_DONE=1"
+        exit 0
+    fi
+
+    # memtester found — calculate safe test size
+    # Reserve 64MB for system (kernel, sshd, luci)
+    SAFE_RESERVE_MB=64
+    if [ "$SIZE" -gt 0 ]; then
+        # User specified size via dropdown or manual input
+        TEST_MB=$SIZE
+    else
+        # Auto: test available - reserve
+        TEST_MB=$((FREE_MB - SAFE_RESERVE_MB))
+    fi
+    [ "$TEST_MB" -lt 16 ] && TEST_MB=16
+    # Don't exceed total
+    [ "$TEST_MB" -gt "$FREE_MB" ] && TEST_MB=$FREE_MB
+
+    echo "MEM_CAPACITY_BIN=${MEMTESTER_BIN}"
+    echo "MEM_CAPACITY_TEST_MB=${TEST_MB}"
+    echo "MEM_CAPACITY_TOTAL_MB=${TOTAL_MB}"
+    echo "MEM_CAPACITY_AVAIL_MB=${FREE_MB}"
+    echo "MEM_CAPACITY_RESERVE_MB=${SAFE_RESERVE_MB}"
+    echo "MEM_CAPACITY_COVERAGE=$((TEST_MB * 100 / TOTAL_MB))"
+    echo "MEM_PHASE=memtester_run"
+    echo "MEM_CAPACITY_NOTE=memtester 使用 malloc 申请内存，不会触发 OOM，测完自动释放"
+
+    sync
+    START=$(now_cs)
+    # Run memtester: SIZE MB, 1 loop
+    MEMTESTER_OUT=$("$MEMTESTER_BIN" "${TEST_MB}M" 1 2>&1)
+    MEMTESTER_RC=$?
+    END=$(now_cs)
+    ELAPSED_CS=$((END - START))
+    [ "$ELAPSED_CS" -le 0 ] && ELAPSED_CS=1
+    ELAPSED_SEC=$((ELAPSED_CS / 100))
+
+    echo "MEM_CAPACITY_RC=${MEMTESTER_RC}"
+    echo "MEM_CAPACITY_ELAPSED_SEC=${ELAPSED_SEC}"
+
+    # Parse memtester output for test results
+    # Count "ok" lines and any "FAIL" lines
+    OK_COUNT=$(echo "$MEMTESTER_OUT" | grep -c "ok$" 2>/dev/null || echo 0)
+    FAIL_COUNT=$(echo "$MEMTESTER_OUT" | grep -ci "fail" 2>/dev/null || echo 0)
+    echo "MEM_CAPACITY_TESTS_OK=${OK_COUNT}"
+    echo "MEM_CAPACITY_TESTS_FAIL=${FAIL_COUNT}"
+
+    # Extract test names that passed
+    PASSED_TESTS=$(echo "$MEMTESTER_OUT" | awk '/: *ok$/ {sub(/: *ok$/, "", $0); gsub(/^ +| +$/, "", $0); printf "%s%s", sep, $0; sep=", "}' 2>/dev/null)
+    echo "MEM_CAPACITY_PASSED_TESTS=${PASSED_TESTS}"
+
+    if [ "$MEMTESTER_RC" -eq 0 ] && [ "$FAIL_COUNT" -eq 0 ]; then
+        echo "MEM_CAPACITY_STATUS=PASS"
+        echo "MEM_PRESSURE_VERDICT=PASS"
+        echo "MEM_VERDICT=PASS"
+        echo "MEM_RESULT_TEXT=✅ 内存完整性通过：${TEST_MB}MB 全部 ${OK_COUNT} 项测试 OK（覆盖率 ${TEST_MB}*100/${TOTAL_MB}）"
+    else
+        echo "MEM_CAPACITY_STATUS=FAIL"
+        echo "MEM_PRESSURE_VERDICT=FAIL"
+        echo "MEM_VERDICT=FAIL"
+        echo "MEM_RESULT_TEXT=❌ 内存完整性失败：${FAIL_COUNT} 项测试异常，可能存在坏块"
+    fi
+
+    # Append key memtester output lines (strip control chars for readability)
+    echo "$MEMTESTER_OUT" | sed 's/\x08//g; s/setting [0-9]*//g; s/testing [0-9]*//g' | grep -E '(Stuck Address|Random Value|Compare XOR|Compare SUB|Compare MUL|Compare DIV|Compare OR|Compare AND|Sequential Increment|Solid Bits|Block Sequential|Checkerboard|Walking Ones|Walking Zeroes|Done|^memtester version|^want |^got )' | sed 's/^/MEM_CAPACITY_LOG=/'
+
+    echo "MEM_PHASE=cleanup"
+    echo "MEM_CLEANUP_DONE=1"
+    echo "MEM_TEST_DONE=1"
+    exit 0
+fi
+
+# ── original tmpfs pressure modes ──
 TARGET_MB=$(choose_target_mb "$MODE" "$SIZE" "$TMP_FREE_MB" "$FREE_MB")
 COUNT=$((TARGET_MB * 1024 / 8))
 [ "$COUNT" -lt 1 ] && COUNT=1

@@ -56,32 +56,60 @@ rt_emmc_manf_name() {
         20) echo "Lexar(雷克沙)" ;;
         25) echo "Kingston(金士顿)" ;;
         28) echo "Crucial(英睿达)/Lexar(雷克沙)" ;;
-        2c) echo "Kingston(金士顿)" ;;
         29) echo "ADATA(威刚)" ;;
+        2c) echo "Kingston(金士顿)" ;;
         2d) echo "YMTC(长江存储)" ;;
         2e) echo "CXMT(长鑫存储)" ;;
+        2f) echo "Konsemi(康芯威)" ;;
         30) echo "Netac(朗科)/SanDisk(闪迪)" ;;
         33) echo "STMicroelectronics(意法)" ;;
         37) echo "KingMax(胜创)" ;;
+        41) echo "Kingston(金士顿)" ;;
         44) echo "ATP" ;;
         45) echo "SanDisk(闪迪)" ;;
-        41) echo "Kingston(金士顿)" ;;
         6f) echo "STMicroelectronics(意法)" ;;
         70) echo "Kingston(金士顿)" ;;
         74) echo "Transcend(创见)" ;;
         76) echo "Patriot( Patriot)" ;;
         82) echo "Gobe/Sony(索尼)" ;;
+        90) echo "SK Hynix(海力士)" ;;
+        9b) echo "YMTC(长江存储)" ;;
+        d9) echo "Apacer(宇瞻)" ;;
+        df) echo "SYC(时意创)" ;;
+        ec) echo "ATO/JingCun(晶存)" ;;
         # 国产/代工
         88|d6) echo "Longsys(江波龙)" ;;
         f4) echo "BIWIN(佰维)" ;;
-        ea) echo "SPeMMC/深圳 SPeMMC" ;;
+        ea) echo "SPeMMC/康盈/硅格" ;;
         fe) echo "Micron(美光)" ;;
-        # 未知
         "") echo "未知" ;;
         *) echo "未知(0x$id)" ;;
     esac
 }
 
+rt_emmc_chip_name() {
+    mid="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
+    mid="${mid#0x}"
+    pnm="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+    pnm="${pnm#0x}"
+    case "$mid:$pnm" in
+        f4:415142313154) echo "BIWIN(佰维) AQB11T" ;;
+        f4:426977696e*) echo "BIWIN(佰维) Biwin" ;;
+        90:4841473265*) echo "SK Hynix(海力士) HAG2e" ;;
+        90:4838473461*) echo "SK Hynix(海力士) H8G4a" ;;
+        2f:303553303030) echo "Konsemi(康芯威) 05S000" ;;
+        ea:533033313131) echo "Kowin(康盈) S03111" ;;
+        ea:5350654d4d43) echo "SiliconGo(硅格)/SPeMMC" ;;
+        15:41474e443352) echo "Samsung(三星) AGND3R" ;;
+        15:384754463452) echo "Samsung(三星) 8GTF4R" ;;
+        11:303034473630) echo "Toshiba(东芝) 004G60" ;;
+        ec:415432533338) echo "ATO/JingCun(晶存) AT2S38" ;;
+        df:534341303847) echo "SYC(时意创) SCA08G" ;;
+        88:4e43617264) echo "Longsys(江波龙) NCard" ;;
+        9b:593053323536) echo "YMTC(长江存储) Y0S256" ;;
+        *) rt_emmc_manf_name "$mid" ;;
+    esac
+}
 rt_find_ext_csd_path() {
     for host in /sys/class/mmc_host/mmc*/mmc*:*/ext_csd; do
         [ -f "$host" ] && [ -r "$host" ] && { echo "$host"; return 0; }

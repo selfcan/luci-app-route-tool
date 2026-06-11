@@ -2,7 +2,7 @@
 
 OpenWrt LuCI 插件：路由器存储健康诊断 + 分区管理 + 网口检测 + 内存压力测试
 
-![v0.3.8 界面展示](screenshots/v038-showcase.jpg)
+![Route Tool LuCI 界面](screenshots/route-tool-dashboard.png)
 
 ## 功能
 
@@ -19,14 +19,19 @@ OpenWrt LuCI 插件：路由器存储健康诊断 + 分区管理 + 网口检测 
 ## 一键安装
 
 ```bash
-curl -L -o /tmp/route-tool.ipk https://godsun.pro/upload/luci-app-route-tool_0.3.10_all.ipk && opkg install --force-reinstall /tmp/route-tool.ipk && rm -f /tmp/route-tool.ipk
+wget -O /tmp/luci-app-route-tool.ipk https://github.com/rothdren-lion/luci-app-route-tool/releases/latest/download/luci-app-route-tool_all.ipk
+opkg install /tmp/luci-app-route-tool.ipk
 ```
 
-或从 [Releases](../../releases) 下载 IPK 手动安装：
+或从 [Releases](../../releases) 下载版本化 IPK 手动安装：
 
 ```bash
-opkg install luci-app-route-tool_0.3.10_all.ipk
+opkg install luci-app-route-tool_0.3.13-1_all.ipk
 ```
+
+### 在线 OTA
+
+v0.3.13 起，页面标题版本号旁会每天自动检查一次 GitHub Releases；发现新版本时显示 `可更新` 小标识，点击即可在线 OTA 更新插件。
 
 ## 使用
 
