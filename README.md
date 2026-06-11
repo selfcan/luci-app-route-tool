@@ -26,7 +26,7 @@ opkg install /tmp/luci-app-route-tool.ipk
 或从 [Releases](../../releases) 下载版本化 IPK 手动安装：
 
 ```bash
-opkg install luci-app-route-tool_0.3.14-1_all.ipk
+opkg install luci-app-route-tool_0.3.15-1_all.ipk
 ```
 
 ### 在线 OTA

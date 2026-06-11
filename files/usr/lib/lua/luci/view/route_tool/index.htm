@@ -56,7 +56,7 @@
 </style>
 
 <div class="rt-wrap">
-  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%><span class="rt-page-version">v0.3.14</span><span id="ota-badge" class="rt-ota-badge" onclick="installPluginUpdate()" title="点击在线更新插件">可更新</span></h2>
+  <h2 name="content"><%:Route Tool + Storage Health 存储诊断分区工具%><span class="rt-page-version">v0.3.15</span><span id="ota-badge" class="rt-ota-badge" onclick="installPluginUpdate()" title="点击在线更新插件">可更新</span></h2>
   <div class="rt-warn">
     <b>危险提示：</b>写入分区操作很危险，请确定知道自己在玩什么！对应位置写错文件必砖！
   </div>
@@ -82,7 +82,7 @@
   <div class="rt-health-grid" id="dashboard">
     <div class="rt-card"><div class="rt-title">🖥 SoC</div><div class="rt-val" id="soc-val">--</div><div class="rt-meta rt-kv" id="soc-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🌐 网口</div><div class="rt-val" id="port-val">--</div><div class="rt-meta rt-kv" id="port-kv"></div></div>
-    <div class="rt-card"><div class="rt-title">💽 容量</div><div class="rt-val" id="storage-val">--</div><div class="rt-meta rt-kv" id="storage-kv"></div></div>
+    <div class="rt-card"><div class="rt-title">💽 容量</div><div class="rt-val" id="storage-val">--</div><div class="rt-meta" id="storage-sub">等待容量信息</div><div class="rt-meta rt-kv" id="storage-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🔲 eMMC 寿命估算 <span class="rt-badge" id="emmc-detect">检测中</span></div><div class="rt-val" id="eol-val">--</div><div class="rt-bar"><i id="eol-bar" style="width:0%"></i></div><div class="rt-meta rt-kv" id="emmc-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🚀 eMMC 读写速度</div><div class="rt-val" id="speed-val">--</div><div class="rt-meta" id="speed-sub">等待测速</div><div class="rt-meta rt-kv" id="speed-kv"></div></div>
     <div class="rt-card"><div class="rt-title">🧠 内存检测 <span class="rt-badge" style="background:#fff3cd;border-color:#ffc107;color:#856404">下拉选择模式</span></div><div class="rt-val" id="mem-val" style="font-size:20px">--</div><div class="rt-meta" id="mem-sub">下拉选模式，点"内存测试"按钮执行；选"完整性"需先上传 memtester 到 /tmp/</div></div>
@@ -178,14 +178,19 @@ function capRow(name, total, free, used, pct, dev, mp) {
 
 function updateCapacity(d) {
   var val = qs('#storage-val');
+  var sub = qs('#storage-sub');
   var box = qs('#storage-kv');
   if (!val || !box) return;
 
   var typ = d.STORAGE_TYPE || ((d.EMMC_TOTAL_MB || d.EMMC_DATA_TOTAL_MB) ? 'eMMC' : (d.NAND_TOTAL_MB ? 'NAND' : '--'));
   var mainFree = d.EMMC_DATA_FREE_MB || d.OVERLAY_FREE_MB || d.ROOT_FREE_MB || 0;
+  var mainTotal = d.EMMC_DATA_TOTAL_MB || d.OVERLAY_TOTAL_MB || d.ROOT_TOTAL_MB || 0;
+  var mainUsed = d.EMMC_DATA_USED_MB || d.OVERLAY_USED_MB || d.ROOT_USED_MB || (mainTotal && mainFree ? (parseInt(mainTotal, 10) - parseInt(mainFree, 10)) : 0);
+  var mainPct = d.EMMC_DATA_USED_PCT || d.OVERLAY_USED_PCT || d.ROOT_USED_PCT || '-';
   var html = '';
 
   val.textContent = typ + (mainFree ? ' · 剩余' + fmtMB(mainFree) : '');
+  if (sub && mainTotal) sub.textContent = '运行 ' + fmtMB(mainUsed) + ' / 总量 ' + fmtMB(mainTotal) + '，已用 ' + esc(mainPct);
   if (d.EMMC_TOTAL_MB) html += '<div class="rt-k">eMMC总量</div><div>' + fmtMB(d.EMMC_TOTAL_MB) + '</div>';
   html += capRow('ROM', d.ROM_TOTAL_MB, d.ROM_FREE_MB, d.ROM_USED_MB, d.ROM_USED_PCT, d.ROM_DEV, d.ROM_MOUNT);
   html += capRow('Overlay', d.OVERLAY_TOTAL_MB, d.OVERLAY_FREE_MB, d.OVERLAY_USED_MB, d.OVERLAY_USED_PCT, d.OVERLAY_DEV, d.OVERLAY_MOUNT);
@@ -431,7 +436,7 @@ function updateMemoryFromKV(d) {
     var total = d.MEM_TOTAL_MB || 0;
     var used = d.MEM_USED_MB || (total && free ? (parseInt(total, 10) - parseInt(free, 10)) : 0);
     if (mv) {
-      mv.textContent = '剩余 ' + fmtMB(free);
+      mv.textContent = '内存 · 剩余' + fmtMB(free);
       mv.className = 'rt-val ' + (d.MEM_FREE_PCT && parseInt(d.MEM_FREE_PCT, 10) < 15 ? 'warnc' : 'good');
     }
     if (ms) ms.textContent = '运行 ' + fmtMB(used) + ' / 总量 ' + fmtMB(total) + '，剩余 ' + (d.MEM_FREE_PCT || '-') + '%';
