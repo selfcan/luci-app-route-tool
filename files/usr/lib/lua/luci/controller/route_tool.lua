@@ -11,9 +11,10 @@ function index()
     entry({"admin", "system", "route_tool", "update"}, call("update"), nil).leaf = true
     entry({"admin", "system", "route_tool", "health"}, call("health"), nil).leaf = true
     entry({"admin", "system", "route_tool", "alloc_storage"}, call("alloc_storage"), nil).leaf = true
+    entry({"admin", "system", "route_tool", "write_status"}, call("write_status"), nil).leaf = true
 end
 
-local CURRENT_VERSION = "0.3.21-1"
+local CURRENT_VERSION = "0.3.22-1"
 local UPDATE_BASE_URL = "https://github.com/rothdren-lion/luci-app-route-tool/releases/latest/download"
 local UPDATE_VERSION_URL = UPDATE_BASE_URL .. "/VERSION"
 local UPDATE_IPK_URL = UPDATE_BASE_URL .. "/luci-app-route-tool_all.ipk"
@@ -121,13 +122,42 @@ function write()
         luci.http.write_json({ ok = false, message = "没有收到上传文件" })
         return
     end
-    local cmd = "/usr/libexec/route-tool write " .. shellquote(part) .. " " .. shellquote(tmp) .. " YES >/tmp/route-tool-write-out 2>&1"
-    local rc = sys.call(cmd)
-    local out = fs.readfile("/tmp/route-tool-write-out") or ""
-    os.remove("/tmp/route-tool-write-out")
-    local ok = (rc == 0)
-    os.remove(tmp)
-    luci.http.write_json({ ok = ok, message = out ~= "" and out or (ok and "写入完成" or "写入失败 (exit " .. tostring(rc) .. ")") })
+
+    -- Write runs in background to avoid uhttpd CGI timeout (dd on large partitions can take minutes).
+    -- Frontend polls /write_status for the result.
+    local status_file = "/tmp/route-tool-write-status.txt"
+    os.remove(status_file)
+    sys.exec(string.format(
+        "( /usr/libexec/route-tool write %s %s YES >%s 2>&1; echo \"RC=$?\" >>%s ) &",
+        shellquote(part), shellquote(tmp), status_file, status_file
+    ))
+    luci.http.write_json({ ok = true, message = "正在后台写入 " .. part .. "，请等待...", async = true })
+end
+
+function write_status()
+    local fs = require "nixio.fs"
+    luci.http.prepare_content("application/json")
+    local status_file = "/tmp/route-tool-write-status.txt"
+    local content = fs.readfile(status_file) or ""
+    if content == "" then
+        luci.http.write_json({ running = true, message = "正在写入，请稍候..." })
+    else
+        -- Check if write has finished (RC= line present)
+        local rc = content:match("RC=(%d+)")
+        if rc then
+            os.remove(status_file)
+            local ok = (tonumber(rc) == 0)
+            -- Strip the RC= line from message
+            local msg = content:gsub("RC=%d+\n?$", "")
+            luci.http.write_json({
+                running = false,
+                ok = ok,
+                message = msg ~= "" and msg or (ok and "写入完成" or "写入失败 (exit " .. rc .. ")")
+            })
+        else
+            luci.http.write_json({ running = true, message = "正在写入，请稍候..." })
+        end
+    end
 end
 
 local function json_error(message)
