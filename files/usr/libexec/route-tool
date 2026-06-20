@@ -379,22 +379,43 @@ alloc_storage(){
     fi
 
     # Find free space after last partition
-    free_info="$(sgdisk -p "$emmc" 2>/dev/null | tail -1)"
-    if [ -z "$free_info" ]; then
-        err "无法读取 eMMC 分区表"; exit 5
+    # Try sgdisk first; if it fails (hybrid MBR, CRC mismatch, etc.),
+    # try with --no-backup-headers or fall back to /sys parsing.
+    sgdisk_err=""
+    sgdisk_out="$(sgdisk -p "$emmc" 2>&1)" || sgdisk_err="$sgdisk_out"
+
+    if [ -n "$sgdisk_err" ]; then
+        # Common fix: hybrid MBR or corrupt backup headers
+        sgdisk_out="$(sgdisk -p --no-backup-headers "$emmc" 2>&1)" || {
+            # Last resort: parse /sys directly
+            sgdisk_out=""
+        }
     fi
 
-    # Get last sector and total sectors
-    last_part_end="$(sgdisk -i 0 "$emmc" 2>/dev/null | sed -n 's/^Last usable sector.*: \([0-9]*\)/\1/p')"
-    # Better: parse free space from sgdisk
-    # sgdisk -p shows:  start  end  size  code  name
-    # Get the end sector of the last partition
-    last_end=0
-    sgdisk -p "$emmc" 2>/dev/null | tail -n +2 | while read num start end size code name; do
-        [ "$end" -gt "$last_end" ] 2>/dev/null && echo "$end"
-    done | sort -n | tail -1 > /tmp/route-tool-alloc-last-end
-    last_end="$(cat /tmp/route-tool-alloc-last-end 2>/dev/null || echo 0)"
-    rm -f /tmp/route-tool-alloc-last-end
+    if [ -z "$sgdisk_out" ]; then
+        # Fallback: read partition info from /sys/class/block/
+        last_end=0
+        for p in /sys/class/block/${base}p*; do
+            [ -f "$p/size" ] || continue
+            local_psize="$(cat "$p/size" 2>/dev/null)"
+            local_pstart="$(cat "$p/start" 2>/dev/null)"
+            [ -n "$local_psize" ] && [ -n "$local_pstart" ] || continue
+            local_pend=$((local_pstart + local_psize - 1))
+            [ "$local_pend" -gt "$last_end" ] 2>/dev/null && last_end=$local_pend
+        done
+        if [ "$last_end" -eq 0 ]; then
+            err "无法读取 eMMC 分区表（sgdisk 失败：${sgdisk_err:-未知}，/sys 也无分区信息）"
+            exit 5
+        fi
+    else
+        # Parse sgdisk output: get the end sector of the last partition
+        last_end=0
+        echo "$sgdisk_out" | tail -n +2 | while read num start end size code name; do
+            [ "$end" -gt "$last_end" ] 2>/dev/null && echo "$end"
+        done | sort -n | tail -1 > /tmp/route-tool-alloc-last-end
+        last_end="$(cat /tmp/route-tool-alloc-last-end 2>/dev/null || echo 0)"
+        rm -f /tmp/route-tool-alloc-last-end
+    fi
 
     disk_end="$(cat /sys/class/block/$base/size 2>/dev/null)"
     [ -n "$disk_end" ] || { err "无法读取 eMMC 容量"; exit 5; }
@@ -412,7 +433,17 @@ alloc_storage(){
     fi
 
     # Check if already a partition named "storage" exists
-    existing="$(sgdisk -p "$emmc" 2>/dev/null | grep -i storage || true)"
+    existing=""
+    if [ -n "$sgdisk_out" ]; then
+        existing="$(echo "$sgdisk_out" | grep -i storage || true)"
+    else
+        # Fallback: check /sys PARTNAME
+        for p in /sys/class/block/${base}p*; do
+            pname="$(cat "$p/uevent" 2>/dev/null | sed -n 's/^PARTNAME=//p' | head -1)"
+            case "$pname" in 0:*) pname="${pname#0:}" ;; esac
+            [ "$pname" = "storage" ] && existing="$p" && break
+        done
+    fi
     if [ -n "$existing" ]; then
         err "已存在名为 storage 的分区：$existing"; exit 6
     fi
@@ -432,13 +463,16 @@ alloc_storage(){
 
     lock_begin
 
-    # Backup GPT before modifying
-    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" "$emmc" >/dev/null 2>&1 || true
+    # Backup GPT before modifying (best effort)
+    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" "$emmc" >/dev/null 2>&1 || \
+    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" --no-backup-headers "$emmc" >/dev/null 2>&1 || true
 
-    # Create new partition
+    # Create new partition (try normal first, then with --no-backup-headers for hybrid MBR / corrupt GPT)
     echo "正在新建分区..."
-    sgdisk -n "0:$next_start:$disk_end" -c "0:storage" -t "0:8300" "$emmc" >/dev/null 2>&1 || {
-        err "sgdisk 新建分区失败"; exit 6
+    sgdisk -n "0:$next_start:$disk_end" -c "0:storage" -t "0:8300" "$emmc" >/dev/null 2>&1 || \
+    sgdisk -n "0:$next_start:$disk_end" -c "0:storage" -t "0:8300" --no-backup-headers "$emmc" >/dev/null 2>&1 || {
+        err "sgdisk 新建分区失败（可能是 hybrid MBR 或 GPT 损坏，建议用编程器备份整片 eMMC 后手动处理）"
+        exit 6
     }
 
     # Partprobe / blockdev reread to pick up new partition
