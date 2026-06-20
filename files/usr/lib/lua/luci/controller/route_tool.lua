@@ -12,7 +12,7 @@ function index()
     entry({"admin", "system", "route_tool", "health"}, call("health"), nil).leaf = true
 end
 
-local CURRENT_VERSION = "0.3.18-1"
+local CURRENT_VERSION = "0.3.19-1"
 local UPDATE_BASE_URL = "https://github.com/rothdren-lion/luci-app-route-tool/releases/latest/download"
 local UPDATE_VERSION_URL = UPDATE_BASE_URL .. "/VERSION"
 local UPDATE_IPK_URL = UPDATE_BASE_URL .. "/luci-app-route-tool_all.ipk"
@@ -120,10 +120,13 @@ function write()
         luci.http.write_json({ ok = false, message = "没有收到上传文件" })
         return
     end
-    local cmd = "/usr/libexec/route-tool write " .. shellquote(part) .. " " .. shellquote(tmp) .. " YES 2>&1"
-    local out = sys.exec(cmd)
+    local cmd = "/usr/libexec/route-tool write " .. shellquote(part) .. " " .. shellquote(tmp) .. " YES >/tmp/route-tool-write-out 2>&1"
+    local rc = sys.call(cmd)
+    local out = fs.readfile("/tmp/route-tool-write-out") or ""
+    os.remove("/tmp/route-tool-write-out")
+    local ok = (rc == 0)
     os.remove(tmp)
-    luci.http.write_json({ ok = true, message = out })
+    luci.http.write_json({ ok = ok, message = out ~= "" and out or (ok and "写入完成" or "写入失败 (exit " .. tostring(rc) .. ")") })
 end
 
 local function json_error(message)
