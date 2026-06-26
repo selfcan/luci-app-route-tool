@@ -373,9 +373,24 @@ alloc_storage(){
     # Check for sgdisk, auto-install if missing
     if ! command -v sgdisk >/dev/null 2>&1; then
         echo "正在安装 sgdisk (gdisk 包)..."
-        opkg update >/dev/null 2>&1 || { err "opkg update 失败，无法自动安装 gdisk"; exit 4; }
-        opkg install gdisk >/dev/null 2>&1 || { err "gdisk 安装失败，请手动安装: opkg install gdisk"; exit 4; }
+        if command -v apk >/dev/null 2>&1; then
+            apk update >/dev/null 2>&1 || true
+            apk add gdisk >/dev/null 2>&1 || apk add --allow-untrusted gdisk >/dev/null 2>&1 || { err "gdisk 安装失败，请手动安装: apk update && apk add gdisk"; exit 4; }
+        elif command -v opkg >/dev/null 2>&1; then
+            opkg update >/dev/null 2>&1 || { err "opkg update 失败，无法自动安装 gdisk"; exit 4; }
+            opkg install gdisk >/dev/null 2>&1 || { err "gdisk 安装失败，请手动安装: opkg install gdisk"; exit 4; }
+        else
+            err "未找到包管理器(apk/opkg)，请手动安装 gdisk"; exit 4
+        fi
         echo "sgdisk 安装完成。"
+        # Re-hash PATH so newly installed binaries are found
+        hash -r 2>/dev/null || true
+        # Ensure common binary paths are in PATH
+        export PATH="/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+    fi
+    # Final sanity check
+    if ! command -v sgdisk >/dev/null 2>&1; then
+        err "sgdisk 仍不可用，请手动安装 gdisk 后重试"; exit 4
     fi
 
     # Find free space after last partition
@@ -409,8 +424,9 @@ alloc_storage(){
         fi
     else
         # Parse sgdisk output: get the end sector of the last partition
+        # Only match lines starting with a partition number (skip header/free-space lines)
         last_end=0
-        echo "$sgdisk_out" | tail -n +2 | while read num start end size code name; do
+        echo "$sgdisk_out" | grep '^[[:space:]]*[0-9]' | while read num start end size code name; do
             [ "$end" -gt "$last_end" ] 2>/dev/null && echo "$end"
         done | sort -n | tail -1 > /tmp/route-tool-alloc-last-end
         last_end="$(cat /tmp/route-tool-alloc-last-end 2>/dev/null || echo 0)"
@@ -421,6 +437,9 @@ alloc_storage(){
     [ -n "$disk_end" ] || { err "无法读取 eMMC 容量"; exit 5; }
     # disk_end is in 512-byte sectors
     disk_end=$((disk_end - 1))  # last sector
+
+    # Safety: last_end must not exceed disk_end (guards against sgdisk output parsing anomalies)
+    [ "$last_end" -le "$disk_end" ] 2>/dev/null || last_end=$disk_end
 
     # Align to 1MB (2048 sectors)
     next_start=$(( (last_end + 1 + 2047) / 2048 * 2048 ))
@@ -450,6 +469,15 @@ alloc_storage(){
 
     if [ "$confirm" != "YES" ]; then
         # Dry-run / preview mode: return info without making changes
+        # Determine next partition number for preview display
+        max_pnum=0
+        for p in /sys/class/block/${base}p*; do
+            [ -f "$p/size" ] || continue
+            pn="$(basename "$p" | sed "s/${base}p//")"
+            [ "$pn" -gt "$max_pnum" ] 2>/dev/null && max_pnum="$pn"
+        done
+        next_pnum=$((max_pnum + 1))
+
         local warn=""
         if [ "$free_mb" -lt 500 ]; then
             warn="⚠️ 可用空间仅 ${free_mb}MB，可能是厂商预留的未使用空间，新建分区可能影响系统稳定性。"
@@ -458,48 +486,142 @@ alloc_storage(){
         printf "  起始扇区: %s (对齐 1MB)\n" "$next_start"
         printf "  结束扇区: %s\n" "$disk_end"
         printf "  大小: %s MB\n" "$free_mb"
-        printf "  分区名: storage\n"
+        printf "  分区名: storage (p%d)\n" "$next_pnum"
         printf "  文件系统: ext4\n"
         printf "  UUID: 48d0489a-e32f-49be-a46d-91cf1dac4da9\n"
-        printf "  挂载点: /mnt/%spN (自动确定)\n" "$base"
+        printf "  挂载点: /mnt/%sp%d\n" "$base" "$next_pnum"
         [ -n "$warn" ] && printf "\n%s\n" "$warn"
         exit 0
     fi
 
     lock_begin
 
-    # Backup GPT before modifying (best effort)
-    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" "$emmc" >/dev/null 2>&1 || \
-    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" --no-backup-headers "$emmc" >/dev/null 2>&1 || true
+    # === Step 1: Verify GPT integrity ===
+    # Distinguish between main (critical) and backup (repairable) GPT damage
+    verify_out="$(sgdisk -v "$emmc" 2>&1)" || true
+    main_bad=""
+    backup_bad=""
+    echo "$verify_out" | grep -qi "Main header.*ERROR\|Main partition table.*ERROR" && main_bad=1
+    echo "$verify_out" | grep -qi "Backup header.*ERROR\|Backup partition table.*ERROR" && backup_bad=1
 
-    # Create new partition (try normal first, then with --no-backup-headers for hybrid MBR / corrupt GPT)
-    echo "正在新建分区..."
-    sgdisk -n "0:$next_start:$disk_end" -c "0:storage" -t "0:8300" "$emmc" >/dev/null 2>&1 || \
-    sgdisk -n "0:$next_start:$disk_end" -c "0:storage" -t "0:8300" --no-backup-headers "$emmc" >/dev/null 2>&1 || {
-        err "sgdisk 新建分区失败（可能是 hybrid MBR 或 GPT 损坏，建议用编程器备份整片 eMMC 后手动处理）"
+    if [ -n "$main_bad" ]; then
+        err "GPT 主分区表/头损坏，拒绝操作。详情: $verify_out"
+        err "建议先用编程器备份整片 eMMC，再手动修复 GPT。"
+        exit 6
+    fi
+
+    if [ -n "$backup_bad" ]; then
+        # Backup GPT is damaged but main is OK - auto-repair with sgdisk -e
+        echo "⚠️ GPT 备份头/表损坏（主分区表正常），正在自动修复..."
+        if sgdisk -e "$emmc" >/dev/null 2>&1; then
+            echo "✅ GPT 备份头已修复（移至磁盘末尾）"
+            # Re-verify after repair
+            verify2="$(sgdisk -v "$emmc" 2>&1)" || true
+            if echo "$verify2" | grep -qi "Main header.*ERROR\|Main partition table.*ERROR"; then
+                err "修复后主GPT异常，拒绝操作: $verify2"
+                exit 6
+            fi
+        else
+            err "GPT 备份头修复失败，但主分区表正常，尝试继续..."
+        fi
+    fi
+
+    # === Step 2: Cross-validate free space with sgdisk -E/-F ===
+    sgdisk_end="$(sgdisk -E "$emmc" 2>/dev/null)" || sgdisk_end=""
+    sgdisk_first="$(sgdisk -F "$emmc" 2>/dev/null)" || sgdisk_first=""
+    if [ -n "$sgdisk_end" ] && [ "$sgdisk_end" -gt 0 ] 2>/dev/null; then
+        # sgdisk reports free space - verify our calculation matches
+        if [ "$sgdisk_end" -ne "$disk_end" ] 2>/dev/null; then
+            # GPT last usable sector may differ from disk end
+            # Trust sgdisk's value (it knows the backup header location)
+            echo "⚠️ 空闲空间结束扇区校正: $disk_end → $sgdisk_end (GPT last usable)"
+            disk_end="$sgdisk_end"
+            free_sectors=$((disk_end - next_start + 1))
+            free_mb=$((free_sectors * 512 / 1024 / 1024))
+        fi
+        if [ -n "$sgdisk_first" ] && [ "$sgdisk_first" -gt 0 ] 2>/dev/null; then
+            if [ "$sgdisk_first" -ne "$next_start" ] 2>/dev/null; then
+                echo "⚠️ 起始扇区校正: $next_start → $sgdisk_first (sgdisk 对齐)"
+                next_start="$sgdisk_first"
+                free_sectors=$((disk_end - next_start + 1))
+                free_mb=$((free_sectors * 512 / 1024 / 1024))
+            fi
+        fi
+    fi
+
+    # Re-check free space after corrections
+    if [ "$free_sectors" -lt 2048 ]; then
+        err "eMMC 无可用未分配空间（校正后剩余 ${free_mb}MB）"
+        exit 5
+    fi
+
+    # === Step 3: Determine next partition number from sgdisk (more reliable than /sys) ===
+    max_pnum=0
+    if [ -n "$sgdisk_out" ]; then
+        # Parse partition numbers from sgdisk -p output
+        echo "$sgdisk_out" | grep '^[[:space:]]*[0-9]' | while read num rest; do
+            [ "$num" -gt "$max_pnum" ] 2>/dev/null && echo "$num"
+        done | sort -n | tail -1 > /tmp/route-tool-alloc-max-pnum
+        max_pnum="$(cat /tmp/route-tool-alloc-max-pnum 2>/dev/null || echo 0)"
+        rm -f /tmp/route-tool-alloc-max-pnum
+    fi
+    # Also check /sys as fallback (some partitions might be hidden from sgdisk)
+    for p in /sys/class/block/${base}p*; do
+        [ -f "$p/size" ] || continue
+        pn="$(basename "$p" | sed "s/${base}p//")"
+        [ "$pn" -gt "$max_pnum" ] 2>/dev/null && max_pnum="$pn"
+    done
+    next_pnum=$((max_pnum + 1))
+
+    # === Step 4: Dry-run with sgdisk -P to validate parameters ===
+    dry_err="$(sgdisk -P -n "${next_pnum}:${next_start}:0" -c "${next_pnum}:storage" -t "${next_pnum}:8300" "$emmc" 2>&1)" || {
+        err "sgdisk dry-run 验证失败，拒绝创建分区: $dry_err"
         exit 6
     }
 
-    # Partprobe / blockdev reread to pick up new partition
-    command -v partprobe >/dev/null 2>&1 && partprobe "$emmc" 2>/dev/null || true
-    # Wait for new partition device to appear
-    sleep 2
+    # === Step 5: Backup GPT before modifying ===
+    sgdisk --backup="/tmp/route-tool-gpt-before-alloc-$$.bin" "$emmc" >/dev/null 2>&1 || true
 
-    # Find the new partition device
-    new_part=""
-    for i in $(seq 30 -1 1); do
-        dev="/dev/${base}p${i}"
-        [ -b "$dev" ] && new_part="$dev"
-    done
-    # More reliable: find the partition with PARTNAME=storage
-    for p in /sys/class/block/${base}p*; do
-        [ -f "$p/uevent" ] || continue
-        pname="$(sed -n 's/^PARTNAME=//p' "$p/uevent" 2>/dev/null | head -1)"
-        case "$pname" in 0:*) pname="${pname#0:}" ;; esac
-        if [ "$pname" = "storage" ]; then
-            new_part="/dev/$(basename "$p")"
-            break
+    # === Step 6: Create partition (execute ONLY ONCE, end=0 lets sgdisk use last usable sector) ===
+    echo "正在新建分区 (p${next_pnum})..."
+    create_out="$(sgdisk -n "${next_pnum}:${next_start}:0" -c "${next_pnum}:storage" -t "${next_pnum}:8300" "$emmc" 2>&1)"
+    create_rc=$?
+    if [ "$create_rc" -ne 0 ]; then
+        # sgdisk may return non-zero even after writing GPT (e.g. warnings)
+        # Check if partition was actually created before aborting
+        check_out="$(sgdisk -i "${next_pnum}" "$emmc" 2>&1)" || true
+        if echo "$check_out" | grep -qi "storage"; then
+            # Partition exists despite non-zero return - continue
+            echo "⚠️ sgdisk 返回非零但分区已创建，继续执行"
+        else
+            err "sgdisk 新建分区失败 (rc=$create_rc): $create_out"
+            exit 6
         fi
+    fi
+
+    # Re-read partition table to pick up new partition
+    partprobe "$emmc" 2>/dev/null || blockdev --rereadpt "$emmc" 2>/dev/null || true
+
+    # Wait for new partition device to appear (loop up to 10s)
+    new_part=""
+    waited=0
+    while [ "$waited" -lt 10 ]; do
+        # Find the partition with PARTNAME=storage
+        for p in /sys/class/block/${base}p*; do
+            [ -f "$p/uevent" ] || continue
+            pname="$(sed -n 's/^PARTNAME=//p' "$p/uevent" 2>/dev/null | head -1)"
+            case "$pname" in 0:*) pname="${pname#0:}" ;; esac
+            if [ "$pname" = "storage" ]; then
+                new_part="/dev/$(basename "$p")"
+                break 2
+            fi
+        done
+        # Fallback: check if expected device node exists
+        [ -b "/dev/${base}p${next_pnum}" ] && { new_part="/dev/${base}p${next_pnum}"; break; }
+        sleep 1
+        waited=$((waited + 1))
+        # Try re-reading again
+        partprobe "$emmc" 2>/dev/null || blockdev --rereadpt "$emmc" 2>/dev/null || true
     done
 
     if [ -z "$new_part" ] || [ ! -b "$new_part" ]; then
